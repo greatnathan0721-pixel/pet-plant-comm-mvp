@@ -1,0 +1,157 @@
+// app/api/chat/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import OpenAI from "openai";
+import crypto from "crypto";
+import { createClient } from "@supabase/supabase-js";
+
+// ---- 環境變數（等下在 Vercel 設定）----
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
+const SUPABASE_URL = process.env.SUPABASE_URL!;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY!;
+const CACHE_TTL_SECONDS = parseInt(process.env.RESPONSE_CACHE_TTL || "604800", 10); // 7 天
+
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+
+type ChatInput = {
+  species: "cat" | "dog" | "plant";
+  userText: string;
+  intentSlug?: string;
+  lang?: "zh" | "en";
+};
+
+type ChatOutput = {
+  reply: string;
+  fun?: string;
+  sources?: Array<{ type: "db"; intent: string }>;
+};
+
+function hashKey(parts: any) {
+  const h = crypto.createHash("sha256");
+  h.update(JSON.stringify(parts));
+  return h.digest("hex");
+}
+
+async function getCached(hash: string) {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("response_cache")
+    .select("payload, expire_at")
+    .eq("hash_key", hash)
+    .gte("expire_at", now)
+    .maybeSingle();
+  if (error) return null;
+  return data?.payload ?? null;
+}
+
+async function setCached(hash: string, payload: any) {
+  const expireAt = new Date(Date.now() + CACHE_TTL_SECONDS * 1000).toISOString();
+  await supabase
+    .from("response_cache")
+    .upsert({ hash_key: hash, payload, expire_at: expireAt }, { onConflict: "hash_key" });
+}
+
+async function resolveIntent(speciesSlug: string, intentSlug?: string, text?: string) {
+  if (intentSlug) {
+    const { data } = await supabase
+      .from("intents_with_species")
+      .select("*")
+      .eq("species_slug", speciesSlug)
+      .eq("slug", intentSlug)
+      .limit(1);
+    if (data?.[0]) return data[0];
+  }
+  // 簡單關鍵字搜（用 view intents_with_species）
+  const { data } = await supabase.rpc("search_intents", {
+    p_species_slug: speciesSlug,
+    p_query: text ?? ""
+  });
+  return data?.[0] ?? null;
+}
+
+async function loadRagByIntentId(intentId: string) {
+  const [{ data: contexts }, { data: knowledge }, { data: fun }] = await Promise.all([
+    supabase.from("contexts").select("severity, context_zh, context_en").eq("intent_id", intentId).limit(3),
+    supabase.from("knowledge").select("body_zh, body_en").eq("intent_id", intentId).limit(3),
+    supabase.from("fun_responses").select("text_zh, text_en").eq("intent_id", intentId).limit(5),
+  ]);
+  return { contexts: contexts || [], knowledge: knowledge || [], fun: fun || [] };
+}
+
+function sysPrompt(lang: "zh" | "en") {
+  return lang === "zh"
+    ? `你是《寵物植物溝通 App》助理，用繁體中文回答。
+輸出結構：
+1) 情境解讀（2-3句）
+2) 專業建議（3-5點，具體步驟）
+3) 趣味一句話（可愛但不喧賓奪主）
+必要時加入「就醫/專業協助」提醒。不得做醫療診斷。`
+    : `You are the Pets & Plants Communication assistant. Reply in English.
+Output:
+1) Situation interpretation (2-3 sentences)
+2) Professional advice (3-5 bullets, actionable)
+3) Fun one-liner (subtle)
+Add “seek vet/pro help” when risk is high. No medical diagnosis.`;
+}
+
+function pickFun(list: any[], lang: "zh" | "en") {
+  if (!list?.length) return undefined;
+  const x = list[Math.floor(Math.random() * list.length)];
+  return lang === "zh" ? x.text_zh : x.text_en;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as ChatInput;
+    const lang = body.lang || "zh";
+    if (!body.species || !body.userText) {
+      return NextResponse.json({ error: "Missing species or userText" }, { status: 400 });
+    }
+
+    const intent = await resolveIntent(body.species, body.intentSlug, body.userText);
+    const intentKey = intent?.slug || "general";
+    const cacheKey = hashKey({ s: body.species, i: intentKey, q: body.userText, l: lang });
+
+    const cached = await getCached(cacheKey);
+    if (cached) return NextResponse.json(cached as ChatOutput);
+
+    const rag = intent ? await loadRagByIntentId(intent.id) : { contexts: [], knowledge: [], fun: [] };
+
+    const ragBlock =
+      lang === "zh"
+        ? `【情境模板】\n${rag.contexts.map((c: any) => c.context_zh).join("\n")}\n\n【專業建議庫】\n- ${rag.knowledge
+            .map((k: any) => k.body_zh)
+            .join("\n- ")}`
+        : `【Context Templates】\n${rag.contexts
+            .map((c: any) => c.context_en)
+            .join("\n")}\n\n【Knowledge】\n- ${rag.knowledge.map((k: any) => k.body_en).join("\n- ")}`;
+
+    const userMsg =
+      lang === "zh"
+        ? `使用者描述：${body.userText}\n意圖：${intentKey}`
+        : `User description: ${body.userText}\nIntent: ${intentKey}`;
+
+    const response = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      input: [
+        { role: "system", content: sysPrompt(lang) },
+        { role: "system", content: ragBlock },
+        { role: "user", content: userMsg }
+      ],
+      temperature: 0.5
+    });
+
+    const text = (response as any).output_text?.trim() || "Sorry, no response.";
+    const payload: ChatOutput = {
+      reply: text,
+      fun: pickFun(rag.fun, lang),
+      sources: intent ? [{ type: "db", intent: intent.slug }] : []
+    };
+
+    await setCached(cacheKey, payload);
+    return NextResponse.json(payload);
+  } catch (e) {
+    console.error(e);
+    return NextResponse.json({ error: "Internal error" }, { status: 500 });
+  }
+}
