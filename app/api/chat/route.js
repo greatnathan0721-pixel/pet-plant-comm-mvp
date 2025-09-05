@@ -154,7 +154,7 @@ export async function POST(req) {
         : `User description: ${userText}\nIntent: ${intentKey}`;
 
     const response = await openai.responses.create({
-      model: "gpt-4.1-mini", // 如遇模型權限問題，可改 "gpt-4o-mini"
+      model: "gpt-4o-mini", // 如遇模型權限問題，可改 "gpt-4o-mini"
       input: [
         { role: "system", content: sysPrompt(lang) },
         { role: "system", content: ragBlock },
