@@ -1,7 +1,8 @@
+export const runtime = "nodejs";
 // app/api/chat/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
-import crypto from "crypto";
+import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
 // ---- 環境變數（等下在 Vercel 設定）----
