@@ -3,7 +3,7 @@ export const metadata = {
   description: "Minimal Next.js app with /api/chat",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }) {
   return (
     <html lang="zh-Hant">
       <body style={{ margin: 0, fontFamily: "system-ui, sans-serif" }}>
