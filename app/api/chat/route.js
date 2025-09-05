@@ -10,12 +10,45 @@ import { createClient } from "@supabase/supabase-js";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const CACHE_TTL_SECONDS = parseInt(process.env.RESPONSE_CACHE_TTL || "604800", 10); // 7d
+const CACHE_TTL_SECONDS = parseInt(process.env.RESPONSE_CACHE_TTL || "604800", 10); // 7天
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-// --- helpers ---
+// ---- Chat with fallback ----
+async function chatWithFallback(messages, temperature = 0.5) {
+  const candidates = ["gpt-4o-mini", "gpt-3.5-turbo"];
+  let lastError;
+
+  for (const model of candidates) {
+    try {
+      const chat = await openai.chat.completions.create({
+        model,
+        messages,
+        temperature
+      });
+      const text = chat?.choices?.[0]?.message?.content?.trim();
+      if (text) return { text, modelUsed: model };
+      lastError = new Error("Empty completion");
+    } catch (err) {
+      const status = err?.status;
+      const code = err?.code || err?.error?.code;
+      const msg = (err?.message || "").toLowerCase();
+      const soft =
+        status === 429 ||
+        code === "insufficient_quota" ||
+        code === "rate_limit_exceeded" ||
+        msg.includes("quota") ||
+        msg.includes("rate limit") ||
+        msg.includes("insufficient");
+      if (!soft) throw err;
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("All models failed");
+}
+
+// ---- helpers ----
 function envOk() {
   return {
     OPENAI_API_KEY: !!OPENAI_API_KEY,
@@ -100,8 +133,6 @@ function pickFun(list, lang) {
 export async function GET() {
   try {
     const envs = envOk();
-
-    // 試查 Supabase 是否可連、表是否存在
     const { error: pingErr, count } = await supabase
       .from("intents")
       .select("*", { count: "exact", head: true });
@@ -153,28 +184,25 @@ export async function POST(req) {
         ? `使用者描述：${userText}\n意圖：${intentKey}`
         : `User description: ${userText}\nIntent: ${intentKey}`;
 
-// 改用 Chat Completions（所有 4.x 版本都支援）
-const chat = await openai.chat.completions.create({
-  model: "gpt-4o-mini",
-  messages: [
-    { role: "system", content: sysPrompt(lang) },
-    { role: "system", content: ragBlock },
-    { role: "user", content: userMsg }
-  ],
-  temperature: 0.5
-});
+    const { text, modelUsed } = await chatWithFallback(
+      [
+        { role: "system", content: sysPrompt(lang) },
+        { role: "system", content: ragBlock },
+        { role: "user", content: userMsg }
+      ],
+      0.5
+    );
 
-const text = chat?.choices?.[0]?.message?.content?.trim() || "Sorry, no response.";
     const payload = {
       reply: text,
       fun: pickFun(rag.fun, lang),
-      sources: intent ? [{ type: "db", intent: intent.slug }] : []
+      sources: intent ? [{ type: "db", intent: intent.slug }] : [],
+      model: modelUsed
     };
 
     await setCached(cacheKey, payload);
     return NextResponse.json(payload);
   } catch (e) {
-    // 把具體錯誤寫入回應，方便你查
     return NextResponse.json({ error: "Internal error", details: String(e?.message || e) }, { status: 500 });
   }
 }
