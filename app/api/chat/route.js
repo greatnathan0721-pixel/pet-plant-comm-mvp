@@ -153,9 +153,10 @@ export async function POST(req) {
         ? `使用者描述：${userText}\n意圖：${intentKey}`
         : `User description: ${userText}\nIntent: ${intentKey}`;
 
-const response = await openai.responses.create({
+// 改用 Chat Completions（所有 4.x 版本都支援）
+const chat = await openai.chat.completions.create({
   model: "gpt-4o-mini",
-  input: [
+  messages: [
     { role: "system", content: sysPrompt(lang) },
     { role: "system", content: ragBlock },
     { role: "user", content: userMsg }
@@ -163,13 +164,7 @@ const response = await openai.responses.create({
   temperature: 0.5
 });
 
-// 新的回傳結構：response.output[0].content[0].text
-let text = "Sorry, no response.";
-try {
-  text = response.output[0].content[0].text.trim();
-} catch (e) {
-  console.error("OpenAI response parse error:", e, response);
-}
+const text = chat?.choices?.[0]?.message?.content?.trim() || "Sorry, no response.";
     const payload = {
       reply: text,
       fun: pickFun(rag.fun, lang),
