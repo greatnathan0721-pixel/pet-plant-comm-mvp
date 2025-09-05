@@ -153,17 +153,23 @@ export async function POST(req) {
         ? `使用者描述：${userText}\n意圖：${intentKey}`
         : `User description: ${userText}\nIntent: ${intentKey}`;
 
-    const response = await openai.responses.create({
-      model: "gpt-4o-mini", // 如遇模型權限問題，可改 "gpt-4o-mini"
-      input: [
-        { role: "system", content: sysPrompt(lang) },
-        { role: "system", content: ragBlock },
-        { role: "user", content: userMsg }
-      ],
-      temperature: 0.5
-    });
+const response = await openai.responses.create({
+  model: "gpt-4o-mini",
+  input: [
+    { role: "system", content: sysPrompt(lang) },
+    { role: "system", content: ragBlock },
+    { role: "user", content: userMsg }
+  ],
+  temperature: 0.5
+});
 
-    const text = response?.output_text?.trim() || "Sorry, no response.";
+// 新的回傳結構：response.output[0].content[0].text
+let text = "Sorry, no response.";
+try {
+  text = response.output[0].content[0].text.trim();
+} catch (e) {
+  console.error("OpenAI response parse error:", e, response);
+}
     const payload = {
       reply: text,
       fun: pickFun(rag.fun, lang),
