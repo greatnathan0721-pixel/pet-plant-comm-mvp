@@ -6,14 +6,23 @@ import OpenAI from "openai";
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
-// ---- 環境變數 ----
+// ---- env ----
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const CACHE_TTL_SECONDS = parseInt(process.env.RESPONSE_CACHE_TTL || "604800", 10); // 7天
+const CACHE_TTL_SECONDS = parseInt(process.env.RESPONSE_CACHE_TTL || "604800", 10); // 7d
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+
+// --- helpers ---
+function envOk() {
+  return {
+    OPENAI_API_KEY: !!OPENAI_API_KEY,
+    SUPABASE_URL: !!SUPABASE_URL,
+    SUPABASE_SERVICE_KEY: !!SUPABASE_SERVICE_KEY,
+  };
+}
 
 function hashKey(parts) {
   const h = crypto.createHash("sha256");
@@ -23,13 +32,12 @@ function hashKey(parts) {
 
 async function getCached(hash) {
   const now = new Date().toISOString();
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from("response_cache")
     .select("payload, expire_at")
     .eq("hash_key", hash)
     .gte("expire_at", now)
     .maybeSingle();
-  if (error) return null;
   return data?.payload ?? null;
 }
 
@@ -88,11 +96,40 @@ function pickFun(list, lang) {
   return lang === "zh" ? x.text_zh : x.text_en;
 }
 
+// ---------- GET: 健康檢查 ----------
+export async function GET() {
+  try {
+    const envs = envOk();
+
+    // 試查 Supabase 是否可連、表是否存在
+    const { error: pingErr, count } = await supabase
+      .from("intents")
+      .select("*", { count: "exact", head: true });
+
+    return NextResponse.json({
+      ok: true,
+      envs,
+      supabase: {
+        canQueryIntents: !pingErr,
+        intentsCount: typeof count === "number" ? count : null,
+        error: pingErr ? String(pingErr.message || pingErr) : null
+      }
+    });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
+  }
+}
+
+// ---------- POST: 主要聊天 ----------
 export async function POST(req) {
   try {
+    const envs = envOk();
+    if (!envs.OPENAI_API_KEY || !envs.SUPABASE_URL || !envs.SUPABASE_SERVICE_KEY) {
+      return NextResponse.json({ error: "Missing environment variables", details: envs }, { status: 500 });
+    }
+
     const body = await req.json();
     const { species, userText, intentSlug, lang = "zh" } = body || {};
-
     if (!species || !userText) {
       return NextResponse.json({ error: "Missing species or userText" }, { status: 400 });
     }
@@ -108,12 +145,8 @@ export async function POST(req) {
 
     const ragBlock =
       lang === "zh"
-        ? `【情境模板】\n${rag.contexts.map((c) => c.context_zh).join("\n")}\n\n【專業建議庫】\n- ${rag.knowledge
-            .map((k) => k.body_zh)
-            .join("\n- ")}`
-        : `【Context Templates】\n${rag.contexts.map((c) => c.context_en).join("\n")}\n\n【Knowledge】\n- ${rag.knowledge
-            .map((k) => k.body_en)
-            .join("\n- ")}`;
+        ? `【情境模板】\n${rag.contexts.map((c) => c.context_zh).join("\n")}\n\n【專業建議庫】\n- ${rag.knowledge.map((k) => k.body_zh).join("\n- ")}`
+        : `【Context Templates】\n${rag.contexts.map((c) => c.context_en).join("\n")}\n\n【Knowledge】\n- ${rag.knowledge.map((k) => k.body_en).join("\n- ")}`;
 
     const userMsg =
       lang === "zh"
@@ -121,7 +154,7 @@ export async function POST(req) {
         : `User description: ${userText}\nIntent: ${intentKey}`;
 
     const response = await openai.responses.create({
-      model: "gpt-4.1-mini",
+      model: "gpt-4.1-mini", // 如遇模型權限問題，可改 "gpt-4o-mini"
       input: [
         { role: "system", content: sysPrompt(lang) },
         { role: "system", content: ragBlock },
@@ -130,7 +163,7 @@ export async function POST(req) {
       temperature: 0.5
     });
 
-    const text = response.output_text?.trim() || "Sorry, no response.";
+    const text = response?.output_text?.trim() || "Sorry, no response.";
     const payload = {
       reply: text,
       fun: pickFun(rag.fun, lang),
@@ -140,7 +173,7 @@ export async function POST(req) {
     await setCached(cacheKey, payload);
     return NextResponse.json(payload);
   } catch (e) {
-    console.error(e);
-    return NextResponse.json({ error: "Internal error" }, { status: 500 });
+    // 把具體錯誤寫入回應，方便你查
+    return NextResponse.json({ error: "Internal error", details: String(e?.message || e) }, { status: 500 });
   }
 }
