@@ -1,14 +1,47 @@
 "use client";
-import { useState } from "react";
+import { useState, useRef } from "react";
+
+// 簡單壓縮：把影像縮到最長邊 1080，減少上傳大小
+async function compressImageToDataURL(file, maxSize = 1080, quality = 0.85) {
+  const img = document.createElement("img");
+  const reader = new FileReader();
+  const fileLoaded = new Promise((resolve) => {
+    reader.onload = () => {
+      img.onload = resolve;
+      img.src = reader.result;
+    };
+  });
+  reader.readAsDataURL(file);
+  await fileLoaded;
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const { width, height } = img;
+  const scale = Math.min(1, maxSize / Math.max(width, height));
+  const w = Math.round(width * scale);
+  const h = Math.round(height * scale);
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", quality);
+}
 
 export default function Home() {
+  // 文字對話
+  const [species, setSpecies] = useState("cat");
   const [userText, setUserText] = useState("");
-  const [species, setSpecies] = useState("cat"); // 預設是貓
   const [reply, setReply] = useState("");
-  const [fun, setFun] = useState(""); // 趣味一句話
+  const [fun, setFun] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleSubmit(e) {
+  // 圖片分析
+  const [imgReply, setImgReply] = useState("");
+  const [imgLoading, setImgLoading] = useState(false);
+  const [preview, setPreview] = useState("");
+  const fileRef = useRef(null);
+
+  // 文字：呼叫 /api/chat
+  async function handleTextSubmit(e) {
     e.preventDefault();
     setLoading(true);
     setReply("");
@@ -17,43 +50,87 @@ export default function Home() {
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          species: species,
-          intentSlug: null, // 讓後端自動判斷
-          userText: userText,
+          species,
+          intentSlug: null,
+          userText,
           lang: "zh",
         }),
       });
-
       const data = await res.json();
       if (data.error) {
         setReply(`❌ 錯誤：${data.error}`);
       } else {
         setReply(data.reply || "（沒有回覆）");
-        setFun(data.fun || ""); // 顯示趣味一句話
+        setFun(data.fun || "");
       }
     } catch (err) {
-      setReply("⚠️ 發生錯誤，請檢查控制台");
       console.error(err);
+      setReply("⚠️ 發生錯誤，請稍候再試");
     } finally {
       setLoading(false);
     }
   }
 
+  // 圖片：呼叫 /api/analyze
+  async function handleImageAnalyze() {
+    const file = fileRef.current?.files?.[0];
+    if (!file) {
+      alert("請先選擇一張照片");
+      return;
+    }
+    setImgLoading(true);
+    setImgReply("");
+
+    try {
+      const dataURL = await compressImageToDataURL(file); // 壓縮後的 data URL
+      const res = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          species,
+          userText,   // 可重用文字欄位提供補充說明
+          imageData: dataURL,
+          lang: "zh",
+        }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setImgReply(`❌ 錯誤：${data.error}${data.details ? "｜" + data.details : ""}`);
+      } else {
+        setImgReply(data.reply || "（沒有回覆）");
+      }
+    } catch (e) {
+      console.error(e);
+      setImgReply("⚠️ 發生錯誤，請稍候再試");
+    } finally {
+      setImgLoading(false);
+    }
+  }
+
+  function onFileChange(e) {
+    const f = e.target.files?.[0];
+    if (!f) {
+      setPreview("");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setPreview(String(reader.result));
+    reader.readAsDataURL(f);
+  }
+
   return (
-    <main style={{ maxWidth: "600px", margin: "50px auto", fontFamily: "sans-serif" }}>
+    <main style={{ maxWidth: 720, margin: "40px auto", fontFamily: "sans-serif", padding: "0 16px" }}>
       <h1>🐾 寵物＆植物溝通 MVP</h1>
 
       {/* 物種選單 */}
-      <label style={{ display: "block", marginBottom: "10px" }}>
+      <label style={{ display: "block", margin: "12px 0" }}>
         選擇物種：
         <select
           value={species}
           onChange={(e) => setSpecies(e.target.value)}
-          style={{ marginLeft: "10px", padding: "5px" }}
+          style={{ marginLeft: 10, padding: 6 }}
         >
           <option value="cat">🐱 貓咪</option>
           <option value="dog">🐶 狗狗</option>
@@ -61,37 +138,75 @@ export default function Home() {
         </select>
       </label>
 
-      {/* 問題輸入 */}
-      <form onSubmit={handleSubmit}>
-        <textarea
-          rows={3}
-          style={{ width: "100%", padding: "10px" }}
-          placeholder="輸入你的問題..."
-          value={userText}
-          onChange={(e) => setUserText(e.target.value)}
-        />
+      {/* 共用的文字欄位（也可給圖片分析當補充說明） */}
+      <textarea
+        rows={3}
+        style={{ width: "100%", padding: 10 }}
+        placeholder="輸入你的問題（或圖片的補充說明）..."
+        value={userText}
+        onChange={(e) => setUserText(e.target.value)}
+      />
+
+      {/* 文字對話區塊 */}
+      <section style={{ marginTop: 12, padding: 12, border: "1px solid #eee", borderRadius: 8 }}>
+        <h3>💬 文字諮詢</h3>
         <button
-          type="submit"
+          onClick={handleTextSubmit}
           disabled={loading}
-          style={{ marginTop: "10px", padding: "10px 20px" }}
+          style={{ marginTop: 8, padding: "8px 16px" }}
         >
-          {loading ? "處理中..." : "送出"}
+          {loading ? "處理中..." : "送出文字問題"}
         </button>
-      </form>
 
-      {/* 回覆顯示 */}
-      {reply && (
-        <div style={{ marginTop: "20px", whiteSpace: "pre-line" }}>
-          <h3>AI 回覆：</h3>
-          <p>{reply}</p>
+        {reply && (
+          <div style={{ marginTop: 12, whiteSpace: "pre-line" }}>
+            <strong>AI 回覆：</strong>
+            <p>{reply}</p>
+            {fun && (
+              <div style={{ marginTop: 8, fontStyle: "italic", color: "green" }}>
+                🌟 趣味一句話：{fun}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
 
-          {fun && (
-            <div style={{ marginTop: "10px", fontStyle: "italic", color: "green" }}>
-              🌟 趣味一句話：{fun}
-            </div>
-          )}
-        </div>
-      )}
+      {/* 圖片上傳/拍照區塊 */}
+      <section style={{ marginTop: 20, padding: 12, border: "1px solid #eee", borderRadius: 8 }}>
+        <h3>📸 圖片分析（拍照或上傳）</h3>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={onFileChange}
+          style={{ marginTop: 8 }}
+        />
+        {preview && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 12, color: "#666" }}>預覽：</div>
+            <img
+              src={preview}
+              alt="preview"
+              style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid #ddd" }}
+            />
+          </div>
+        )}
+        <button
+          onClick={handleImageAnalyze}
+          disabled={imgLoading}
+          style={{ marginTop: 12, padding: "8px 16px" }}
+        >
+          {imgLoading ? "分析中..." : "分析圖片"}
+        </button>
+
+        {imgReply && (
+          <div style={{ marginTop: 12, whiteSpace: "pre-line" }}>
+            <strong>AI 圖片回覆：</strong>
+            <p>{imgReply}</p>
+          </div>
+        )}
+      </section>
     </main>
   );
 }
