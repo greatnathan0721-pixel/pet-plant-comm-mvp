@@ -1,32 +1,8 @@
-async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
-  const img = document.createElement("img");
-  const reader = new FileReader();
-  const fileLoaded = new Promise((resolve) => {
-    reader.onload = () => {
-      img.onload = resolve;
-      img.src = reader.result;
-    };
-  });
-  reader.readAsDataURL(file);
-  await fileLoaded;
-
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  const { width, height } = img;
-  const scale = Math.min(1, maxSize / Math.max(width, height));
-  const w = Math.round(width * scale);
-  const h = Math.round(height * scale);
-  canvas.width = w;
-  canvas.height = h;
-  ctx.drawImage(img, 0, 0, w, h);
-  return canvas.toDataURL("image/jpeg", quality);
-}
-
 "use client";
 import { useState, useRef } from "react";
 
-// 簡單壓縮：把影像縮到最長邊 1080，減少上傳大小
-async function compressImageToDataURL(file, maxSize = 1080, quality = 0.85) {
+// 壓縮圖片：最長邊 720、品質 0.7（省流量省成本）
+async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
   const img = document.createElement("img");
   const reader = new FileReader();
   const fileLoaded = new Promise((resolve) => {
@@ -108,13 +84,14 @@ export default function Home() {
     setImgReply("");
 
     try {
-      const dataURL = await compressImageToDataURL(file); // 壓縮後的 data URL
+      // 先壓縮再上傳
+      const dataURL = await compressImageToDataURL(file, 720, 0.7);
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           species,
-          userText,   // 可重用文字欄位提供補充說明
+          userText,   // 可當補充說明
           imageData: dataURL,
           lang: "zh",
         }),
@@ -162,7 +139,7 @@ export default function Home() {
         </select>
       </label>
 
-      {/* 共用的文字欄位（也可給圖片分析當補充說明） */}
+      {/* 共用的文字欄位（也提供圖片分析補充說明） */}
       <textarea
         rows={3}
         style={{ width: "100%", padding: 10 }}
@@ -171,7 +148,7 @@ export default function Home() {
         onChange={(e) => setUserText(e.target.value)}
       />
 
-      {/* 文字對話區塊 */}
+      {/* 文字諮詢 */}
       <section style={{ marginTop: 12, padding: 12, border: "1px solid #eee", borderRadius: 8 }}>
         <h3>💬 文字諮詢</h3>
         <button
@@ -195,7 +172,7 @@ export default function Home() {
         )}
       </section>
 
-      {/* 圖片上傳/拍照區塊 */}
+      {/* 圖片分析 */}
       <section style={{ marginTop: 20, padding: 12, border: "1px solid #eee", borderRadius: 8 }}>
         <h3>📸 圖片分析（拍照或上傳）</h3>
         <input
