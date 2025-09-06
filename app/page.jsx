@@ -1,4 +1,5 @@
-'use client';
-export default function Home() {
-  return <main style={{ padding: 20, fontFamily: 'sans-serif' }}>OK ✅</main>;
+import HomeClient from '../components/HomeClient';
+
+export default function Page() {
+  return <HomeClient />;
 }
