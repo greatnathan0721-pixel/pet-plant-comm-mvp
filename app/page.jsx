@@ -3,6 +3,7 @@ import { useState } from "react";
 
 export default function Home() {
   const [userText, setUserText] = useState("");
+  const [species, setSpecies] = useState("cat"); // 預設是貓
   const [reply, setReply] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -18,8 +19,8 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          species: "cat",        // 預設測試用，可以改成 "dog" 或 "plant"
-          intentSlug: null,      // 讓後端自動判斷
+          species: species,     // 使用者選的物種
+          intentSlug: null,     // 讓後端自動判斷
           userText: userText,
           lang: "zh",
         }),
@@ -42,6 +43,22 @@ export default function Home() {
   return (
     <main style={{ maxWidth: "600px", margin: "50px auto", fontFamily: "sans-serif" }}>
       <h1>🐾 寵物＆植物溝通 MVP</h1>
+
+      {/* 物種選單 */}
+      <label style={{ display: "block", marginBottom: "10px" }}>
+        選擇物種：
+        <select
+          value={species}
+          onChange={(e) => setSpecies(e.target.value)}
+          style={{ marginLeft: "10px", padding: "5px" }}
+        >
+          <option value="cat">🐱 貓咪</option>
+          <option value="dog">🐶 狗狗</option>
+          <option value="plant">🌱 植物</option>
+        </select>
+      </label>
+
+      {/* 問題輸入 */}
       <form onSubmit={handleSubmit}>
         <textarea
           rows={3}
@@ -59,6 +76,7 @@ export default function Home() {
         </button>
       </form>
 
+      {/* 回覆顯示 */}
       {reply && (
         <div style={{ marginTop: "20px", whiteSpace: "pre-line" }}>
           <h3>AI 回覆：</h3>
