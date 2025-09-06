@@ -5,12 +5,14 @@ export default function Home() {
   const [userText, setUserText] = useState("");
   const [species, setSpecies] = useState("cat"); // 預設是貓
   const [reply, setReply] = useState("");
+  const [fun, setFun] = useState(""); // 趣味一句話
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e) {
     e.preventDefault();
     setLoading(true);
     setReply("");
+    setFun("");
 
     try {
       const res = await fetch("/api/chat", {
@@ -19,8 +21,8 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          species: species,     // 使用者選的物種
-          intentSlug: null,     // 讓後端自動判斷
+          species: species,
+          intentSlug: null, // 讓後端自動判斷
           userText: userText,
           lang: "zh",
         }),
@@ -31,6 +33,7 @@ export default function Home() {
         setReply(`❌ 錯誤：${data.error}`);
       } else {
         setReply(data.reply || "（沒有回覆）");
+        setFun(data.fun || ""); // 顯示趣味一句話
       }
     } catch (err) {
       setReply("⚠️ 發生錯誤，請檢查控制台");
@@ -81,6 +84,12 @@ export default function Home() {
         <div style={{ marginTop: "20px", whiteSpace: "pre-line" }}>
           <h3>AI 回覆：</h3>
           <p>{reply}</p>
+
+          {fun && (
+            <div style={{ marginTop: "10px", fontStyle: "italic", color: "green" }}>
+              🌟 趣味一句話：{fun}
+            </div>
+          )}
         </div>
       )}
     </main>
