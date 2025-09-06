@@ -1,3 +1,27 @@
+async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
+  const img = document.createElement("img");
+  const reader = new FileReader();
+  const fileLoaded = new Promise((resolve) => {
+    reader.onload = () => {
+      img.onload = resolve;
+      img.src = reader.result;
+    };
+  });
+  reader.readAsDataURL(file);
+  await fileLoaded;
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const { width, height } = img;
+  const scale = Math.min(1, maxSize / Math.max(width, height));
+  const w = Math.round(width * scale);
+  const h = Math.round(height * scale);
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
 "use client";
 import { useState, useRef } from "react";
 
