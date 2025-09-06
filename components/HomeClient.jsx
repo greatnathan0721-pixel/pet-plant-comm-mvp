@@ -34,7 +34,7 @@ export default function HomeClient() {
   const [fun, setFun] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // 圖片分析
+  // 圖片分析（單一隱藏 input）
   const [imgReply, setImgReply] = useState('');
   const [imgLoading, setImgLoading] = useState(false);
   const [preview, setPreview] = useState('');
@@ -110,6 +110,7 @@ export default function HomeClient() {
     }
   }
 
+  // 檔案選擇後→產生預覽
   function onFileChange(e) {
     const f = e.target.files?.[0];
     if (!f) {
@@ -172,17 +173,29 @@ export default function HomeClient() {
         )}
       </section>
 
-      {/* 圖片分析 */}
+      {/* 圖片分析（單一「選擇檔案」按鈕 → 系統原生選單） */}
       <section style={{ marginTop: 20, padding: 12, border: '1px solid #eee', borderRadius: 8 }}>
-        <h3>📸 圖片分析（拍照或上傳）</h3>
+        <h3>📸 圖片分析</h3>
+
+        {/* 一顆按鈕：選擇檔案（會叫出原生選單：拍照/相簿/檔案） */}
+        <button
+          type='button'
+          onClick={() => fileRef.current?.click()}
+          style={{ marginTop: 8, padding: '8px 16px' }}
+        >
+          選擇檔案
+        </button>
+
+        {/* 隱藏 input：不帶 capture，交給系統選單決定拍照或相簿 */}
         <input
           ref={fileRef}
           type='file'
           accept='image/*'
-          capture='environment'
           onChange={onFileChange}
-          style={{ marginTop: 8 }}
+          style={{ display: 'none' }}
         />
+
+        {/* 預覽 */}
         {preview && (
           <div style={{ marginTop: 12 }}>
             <div style={{ fontSize: 12, color: '#666' }}>預覽：</div>
@@ -193,6 +206,8 @@ export default function HomeClient() {
             />
           </div>
         )}
+
+        {/* 分析按鈕 */}
         <button
           onClick={handleImageAnalyze}
           disabled={imgLoading}
