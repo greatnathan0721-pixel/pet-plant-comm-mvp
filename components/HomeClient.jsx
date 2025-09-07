@@ -20,55 +20,6 @@ async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
   return canvas.toDataURL('image/jpeg', quality);
 }
 
-// 分享卡（不走 API）
-function generateShareCard({ title = '寵物＆植物小幫手', subtitle = '我的分析結果', body = '', photoDataURL }) {
-  const W = 1080, H = 1350;
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  canvas.width = W; canvas.height = H;
-
-  ctx.fillStyle = '#f6f8f9'; ctx.fillRect(0, 0, W, H);
-  const pad = 60, cardX = pad, cardY = pad, cardW = W - pad*2, cardH = H - pad*2;
-  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#e6e8ea'; ctx.lineWidth = 4;
-  ctx.fillRect(cardX, cardY, cardW, cardH); ctx.strokeRect(cardX, cardY, cardW, cardH);
-
-  ctx.fillStyle = '#111'; ctx.font = 'bold 56px system-ui, -apple-system, Segoe UI, Roboto';
-  ctx.fillText(title, cardX + 48, cardY + 88);
-  ctx.fillStyle = '#1f7a39'; ctx.font = '600 36px system-ui, -apple-system, Segoe UI, Roboto';
-  ctx.fillText(subtitle, cardX + 48, cardY + 148);
-
-  let textTop = cardY + 220;
-  if (photoDataURL) {
-    const img = document.createElement('img'); img.src = photoDataURL;
-    const ph = 520, pw = cardW - 96, px = cardX + 48, py = cardY + 180;
-    ctx.fillStyle = '#ddd'; ctx.fillRect(px, py, pw, ph);
-    try { ctx.drawImage(img, px, py, pw, ph); } catch {}
-    textTop = py + ph + 40;
-  }
-
-  ctx.fillStyle = '#222'; ctx.font = '400 36px system-ui, -apple-system, Segoe UI, Roboto';
-  const lines = wrapText(ctx, body, cardX + 48, cardX + cardW - 48);
-  let y = textTop; const lh = 48;
-  for (const line of lines.slice(0, 18)) { ctx.fillText(line, cardX + 48, y); y += lh; }
-
-  ctx.fillStyle = '#6b7280'; ctx.font = '500 28px system-ui, -apple-system, Segoe UI, Roboto';
-  ctx.fillText('Made with 寵物＆植物溝通 MVP', cardX + 48, cardY + cardH - 40);
-  return canvas.toDataURL('image/png');
-
-  function wrapText(c, text, left, right) {
-    const maxWidth = right - left;
-    const words = (text || '').split(/\s+/);
-    const lines = []; let line = '';
-    for (const w of words) {
-      const test = line ? line + ' ' + w : w;
-      if (c.measureText(test).width > maxWidth) { if (line) lines.push(line); line = w; }
-      else line = test;
-    }
-    if (line) lines.push(line);
-    return lines;
-  }
-}
-
 // 內心劇場（前端 Canvas 合成，不存人像）
 async function generateTheaterImage({ basePhoto, style, petThought = '今天也要好好長葉子！', humanPhoto }) {
   const W = 1080, H = 1350;
@@ -76,7 +27,6 @@ async function generateTheaterImage({ basePhoto, style, petThought = '今天也�
   const ctx = canvas.getContext('2d');
   canvas.width = W; canvas.height = H;
 
-  // 主題設定
   const theme = {
     realistic_bubble: { bg: '#0c1116', frame: '#ffffff20', tint: null },
     realistic_bubble_human: { bg: '#0c1116', frame: '#ffffff20', tint: null },
@@ -85,21 +35,16 @@ async function generateTheaterImage({ basePhoto, style, petThought = '今天也�
 
   ctx.fillStyle = theme.bg; ctx.fillRect(0, 0, W, H);
 
-  // 背景鋪滿
   const img = await loadImg(basePhoto);
   const fit = coverRect(img.width, img.height, W, H);
   ctx.drawImage(img, fit.sx, fit.sy, fit.sw, fit.sh, 0, 0, W, H);
 
-  // 色調
   if (theme.tint) { ctx.fillStyle = theme.tint; ctx.fillRect(0, 0, W, H); }
 
-  // 外框
   ctx.strokeStyle = theme.frame; ctx.lineWidth = 24; ctx.strokeRect(12, 12, W - 24, H - 24);
 
-  // 寵物泡泡（右下）
   drawSpeechBubble(ctx, { x: W - 60, y: H - 280, text: petThought, align: 'right' });
 
-  // 若為小人模式，貼入真人頭像 + 人類泡泡
   if (style === 'realistic_bubble_human' && humanPhoto) {
     const human = await loadImg(humanPhoto);
     const R = 140, cx = 140, cy = H - 160;
@@ -141,13 +86,16 @@ async function generateTheaterImage({ basePhoto, style, petThought = '今天也�
     const h = lines.length * lh + padding * 2;
     const bx = align === 'right' ? x - w : x;
     const by = y - h;
+
     context.fillStyle = 'rgba(255,255,255,0.92)';
     context.strokeStyle = '#111'; context.lineWidth = 3;
     roundRect(context, bx, by, w, h, 18); context.fill(); context.stroke();
+
     context.beginPath();
     if (align === 'right') { context.moveTo(x, y); context.lineTo(bx + w - 40, by + h); context.lineTo(bx + w - 5, by + h - 40); }
     else { context.moveTo(x, y); context.lineTo(bx + 40, by + h); context.lineTo(bx + 5, by + h - 40); }
     context.closePath(); context.fill(); context.stroke();
+
     context.fillStyle = '#111';
     lines.forEach((l, i) => context.fillText(l, bx + padding, by + padding + (i + 0.9) * lh - 12));
 
@@ -175,21 +123,25 @@ async function generateTheaterImage({ basePhoto, style, petThought = '今天也�
 }
 
 export default function HomeClient() {
+  // 文字諮詢
   const [species, setSpecies] = useState('cat');
   const [userText, setUserText] = useState('');
   const [reply, setReply] = useState('');
   const [fun, setFun] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // 圖片分析
   const [imgReply, setImgReply] = useState('');
   const [imgLoading, setImgLoading] = useState(false);
   const [preview, setPreview] = useState('');
   const fileRef = useRef(null);
 
+  // 植物辨識（加強）
   const [plantResult, setPlantResult] = useState(null);
   const [plantLoading, setPlantLoading] = useState(false);
 
-  const [style, setStyle] = useState('realistic_bubble');
+  // 內心劇場（含真人上傳）
+  const [style, setStyle] = useState('realistic_bubble'); // 'realistic_bubble' | 'realistic_bubble_human' | 'jurassic'
   const [humanPreview, setHumanPreview] = useState('');
   const humanRef = useRef(null);
   const [theaterUrl, setTheaterUrl] = useState('');
@@ -286,35 +238,10 @@ export default function HomeClient() {
     a.click();
   }
 
-    function handleShareCard() {
-    const body = plantResult
-      ? [
-          `🌿 植物：${plantResult.common_name || '未知'}（${plantResult.scientific_name || '-' }）`,
-          `信心：${typeof plantResult.confidence === 'number' ? (plantResult.confidence*100).toFixed(0)+'%' : '-'}`,
-          plantResult.likely_issues?.length ? `可能問題：${plantResult.likely_issues.join('、')}` : '',
-          plantResult.care_steps?.length ? `照護：${plantResult.care_steps.join(' / ')}` : '',
-          `嚴重度：${plantResult.severity || '-'}`,
-          plantResult.fun_one_liner ? `「${plantResult.fun_one_liner}」` : '',
-        ].filter(Boolean).join('\n')
-      : (imgReply || reply || '今天的分析結果');
-
-    const png = generateShareCard({
-      title: '寵物＆植物小幫手',
-      subtitle: '我的分析結果',
-      body,
-      photoDataURL: preview || undefined,
-    });
-
-    const a = document.createElement('a');
-    a.href = png;
-    a.download = 'share-card.png';
-    a.click();
-  }
-
   return (
     <main style={{ maxWidth: 720, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 16px' }}>
       <h1>🐾 寵物＆植物溝通 MVP</h1>
-      <p style={{ color: '#555' }}>輸入問題或選擇照片，獲得建議；完成後可生成分享卡或內心劇場圖。</p>
+      <p style={{ color: '#555' }}>輸入問題或選擇照片，獲得建議；完成後可生成內心劇場圖。</p>
 
       {/* 物種選單與說明 */}
       <label style={{ display: 'block', margin: '12px 0' }}>
@@ -371,7 +298,6 @@ export default function HomeClient() {
           <button onClick={handlePlantIdentify} disabled={plantLoading} style={{ padding: '8px 16px' }}>
             {plantLoading ? '辨識中...' : '🌿 植物辨識（加強）'}
           </button>
-          <button onClick={handleShareCard} style={{ padding: '8px 16px' }}>🖼️ 產生分享卡</button>
         </div>
 
         {(imgReply || plantResult) && (
@@ -409,7 +335,6 @@ export default function HomeClient() {
           <h3>🎭 內心劇場（可選擇風格再生成）</h3>
           <p style={{ color: '#555', marginTop: 4 }}>我們先給你看示意圖，選好後再生成，避免浪費資源。</p>
 
-          {/* 風格選擇 + 示意圖（若有放在 public/samples/） */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 }}>
             {[
               { key: 'realistic_bubble', label: '寫實＋泡泡', demo: '/samples/realistic_bubble.jpg' },
@@ -432,7 +357,6 @@ export default function HomeClient() {
             ))}
           </div>
 
-          {/* 若選「含人」→ 顯示上傳本人照片（不保存） */}
           {style === 'realistic_bubble_human' && (
             <div style={{ marginTop: 12 }}>
               <div style={{ padding: 12, border: '1px dashed #d1d5db', borderRadius: 8, background: '#fafafa' }}>
@@ -483,7 +407,6 @@ export default function HomeClient() {
         </section>
       )}
 
-      {/* 免責 */}
       <p style={{ marginTop: 40, fontSize: 12, color: '#777', textAlign: 'center' }}>
         ⚠️ 本服務提供之內容僅供參考，並非醫療診斷或專業治療建議。若您的寵物或植物狀況嚴重，請立即尋求獸醫或專業園藝師協助。
       </p>
