@@ -52,5 +52,6 @@ export function middleware(req) {
 }
 
 export const config = {
-  matcher: ['/api/chat', '/api/analyze'],
+  matcher: ['/api/chat', '/api/analyze', '/api/plant/identify'], // ⬅️ 新增這個
 };
+
