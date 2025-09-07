@@ -223,6 +223,10 @@ export default function HomeClient() {
           </div>
         )}
       </section>
+      <p style={{ marginTop: 40, fontSize: 12, color: '#777', textAlign: 'center' }}>
+  ⚠️ 本服務提供之內容僅供參考，並非醫療診斷或專業治療建議。
+  若您的寵物或植物狀況嚴重，請立即尋求獸醫或專業園藝師協助。
+</p>
     </main>
   );
 }
