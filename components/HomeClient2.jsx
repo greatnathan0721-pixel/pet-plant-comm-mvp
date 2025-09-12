@@ -27,11 +27,11 @@ async function generateTheaterImage({ basePhoto, style, petThought = '今天也�
   const ctx = canvas.getContext('2d');
   canvas.width = W; canvas.height = H;
 
-  const theme = {
-    realistic_bubble: { bg: '#0c1116', frame: '#ffffff20', tint: null },
-    realistic_bubble_human: { bg: '#0c1116', frame: '#ffffff20', tint: null },
-    jurassic: { bg: '#071a0c', frame: '#2f6b36', tint: 'rgba(40,120,55,0.25)' },
-  }[style] || { bg: '#0c1116', frame: '#ffffff20', tint: null };
+const theme = {
+  realistic_bubble: { bg: '#0c1116', frame: '#ffffff20', tint: null },
+  realistic_bubble_human: { bg: '#0c1116', frame: '#ffffff20', tint: null },
+}[style] || { bg: '#0c1116', frame: '#ffffff20', tint: null };
+
 
   ctx.fillStyle = theme.bg; ctx.fillRect(0, 0, W, H);
 
@@ -58,9 +58,9 @@ async function generateTheaterImage({ basePhoto, style, petThought = '今天也�
   }
 
   ctx.fillStyle = '#ffffffdd'; ctx.font = '600 36px system-ui, -apple-system, Segoe UI, Roboto';
-  const label = style === 'jurassic' ? '🦖 侏羅紀風'
-    : style === 'realistic_bubble_human' ? '🗨️ 寫實＋泡泡＋小人'
-    : '🗨️ 寫實＋泡泡';
+const label = style === 'realistic_bubble_human'
+  ? '🗨️ 寫實＋泡泡＋小人'
+  : '🗨️ 寫實＋泡泡';
   ctx.fillText(label, W - ctx.measureText(label).width - 28, 64);
 
   return canvas.toDataURL('image/png');
@@ -338,7 +338,6 @@ export default function HomeClient() {
             {[
               { key: 'realistic_bubble', label: '寫實＋泡泡', demo: '/samples/realistic_bubble.jpg' },
               { key: 'realistic_bubble_human', label: '寫實＋泡泡＋小人', demo: '/samples/realistic_bubble_human.jpg' },
-              { key: 'jurassic', label: '侏羅紀風', demo: '/samples/jurassic.jpg' },
             ].map(s => (
               <label key={s.key} style={{ border: '1px solid #ddd', borderRadius: 8, padding: 8, cursor: 'pointer' }}>
                 <input
