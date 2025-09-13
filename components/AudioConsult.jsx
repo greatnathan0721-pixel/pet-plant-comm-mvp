@@ -3,11 +3,15 @@
 import { useState, useRef, useEffect } from 'react';
 
 const MAX_SECONDS = 20;
+const MAX_UPLOAD_MB = 5; // 上傳檔案大小上限（可依需要調整）
 
 export default function AudioConsult({ species }) {
   const [recording, setRecording] = useState(false);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // 預覽/播放
+  const [audioURL, setAudioURL] = useState('');
 
   // 計時
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -18,7 +22,10 @@ export default function AudioConsult({ species }) {
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
 
-  // 在錄音期間跑倒數
+  // 上傳 input
+  const fileRef = useRef(null);
+
+  // 倒數與自動停止
   useEffect(() => {
     if (recording) {
       startTimeRef.current = Date.now();
@@ -27,13 +34,11 @@ export default function AudioConsult({ species }) {
         const ms = Date.now() - startTimeRef.current;
         setElapsedMs(ms);
         if (ms >= MAX_SECONDS * 1000) {
-          // 時間到自動停止
           stopRecording();
         }
       }, 100);
       return () => clearInterval(tickTimerRef.current);
     } else {
-      // 停止時清理計時器
       clearInterval(tickTimerRef.current);
       tickTimerRef.current = null;
       setElapsedMs(0);
@@ -45,26 +50,29 @@ export default function AudioConsult({ species }) {
 
   async function startRecording() {
     try {
+      // 若正在上傳/分析，避免重疊
+      if (loading) return;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mr = new MediaRecorder(stream);
       mediaRecorderRef.current = mr;
       chunksRef.current = [];
+      setResult(null);
+      setAudioURL('');
 
       mr.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
       mr.onstop = async () => {
-        // 關麥克風
         try { mr.stream.getTracks().forEach(t => t.stop()); } catch {}
-        // 組成 blob → dataURL → 丟後端
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        const audioDataURL = await blobToDataURL(blob);
-        await sendToServer(audioDataURL);
+        const previewURL = URL.createObjectURL(blob);
+        setAudioURL(previewURL);
+        const dataURL = await blobToDataURL(blob);
+        await sendToServer(dataURL);
       };
 
       mr.start();
       setRecording(true);
-      setResult(null);
     } catch (err) {
       alert('無法啟用麥克風：' + (err?.message || String(err)));
     }
@@ -76,6 +84,36 @@ export default function AudioConsult({ species }) {
       try { mr.stop(); } catch {}
     }
     setRecording(false);
+  }
+
+  // 上傳現成音檔
+  async function onFileChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // 若正在錄音，先停止
+    if (recording) stopRecording();
+
+    // 大小限制
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      alert(`音檔過大，請小於 ${MAX_UPLOAD_MB} MB`);
+      e.target.value = '';
+      return;
+    }
+
+    try {
+      setResult(null);
+      const objectURL = URL.createObjectURL(file);
+      setAudioURL(objectURL);
+
+      const dataURL = await fileToDataURL(file);
+      await sendToServer(dataURL);
+    } catch (err) {
+      setResult({ error: '讀取檔案失敗：' + (err?.message || String(err)) });
+    } finally {
+      // 清掉 input 的值，方便重選同一檔案
+      e.target.value = '';
+    }
   }
 
   async function sendToServer(audioDataURL) {
@@ -101,7 +139,7 @@ export default function AudioConsult({ species }) {
       {/* 提示 + 倒數 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <p style={{ fontSize: 13, color: '#555', margin: 0 }}>
-          🎤 最長 {MAX_SECONDS} 秒，請靠近寵物錄音並保持安靜環境。
+          🎤 最長 {MAX_SECONDS} 秒，請靠近寵物錄音並保持安靜環境。或上傳現成音檔（mp3 / m4a / webm / wav）。
         </p>
         {recording && (
           <span
@@ -116,13 +154,13 @@ export default function AudioConsult({ species }) {
         )}
       </div>
 
-      {/* 進度條 */}
+      {/* 進度條（只在錄音時顯示動態） */}
       <div style={{ marginTop: 8, height: 8, background: '#eee', borderRadius: 6, overflow: 'hidden' }}>
         <div style={{ width: `${progress * 100}%`, height: '100%', background: recording ? '#22c55e' : '#ddd' }} />
       </div>
 
-      {/* 控制按鈕 */}
-      <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
+      {/* 控制 + 上傳 */}
+      <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
         {!recording ? (
           <button onClick={startRecording} disabled={loading} style={{ padding: '10px 16px' }}>
             🎤 開始錄音
@@ -132,10 +170,29 @@ export default function AudioConsult({ species }) {
             ⏹ 停止錄音
           </button>
         )}
+
+        <button type="button" onClick={() => fileRef.current?.click()} disabled={loading} style={{ padding: '10px 16px' }}>
+          ⬆️ 上傳音檔
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="audio/*,.m4a,.mp3,.wav,.webm"
+          onChange={onFileChange}
+          style={{ display: 'none' }}
+        />
       </div>
+
+      {/* 音檔預覽 */}
+      {audioURL && (
+        <div style={{ marginTop: 10 }}>
+          <audio src={audioURL} controls />
+        </div>
+      )}
 
       {loading && <p style={{ marginTop: 8 }}>⏳ 分析中，請稍候…</p>}
 
+      {/* 結果顯示 */}
       {result?.advice && (
         <div style={{ marginTop: 12, whiteSpace: 'pre-line' }}>
           <strong>AI 分析：</strong>
@@ -151,6 +208,16 @@ export default function AudioConsult({ species }) {
       )}
     </div>
   );
+}
+
+/** File → dataURL */
+function fileToDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
 }
 
 /** Blob → dataURL */
