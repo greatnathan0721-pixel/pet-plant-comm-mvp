@@ -426,7 +426,11 @@ export default function HomeClient2() {
       {/* 聲音諮詢（結果也會餵進內心劇場台詞） */}
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
         <h3 style={{ marginTop: 0 }}>聲音諮詢：</h3>
-        <AudioConsult species={species} onAdvice={setAudioAdvice} />
+        <AudioConsult
+  species={species}
+  onAdvice={setAudioAdvice}
+  onSpeciesChange={setSpecies}
+/>
         {audioAdvice && (
           <div style={{ marginTop: 8, fontSize: 12, color: '#2563eb' }}>
             ✅ 已擷取語音分析結果，將用於內心劇場台詞。
