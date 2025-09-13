@@ -1,5 +1,6 @@
 'use client';
 import { useState, useRef, useMemo } from 'react';
+import AudioConsult from './AudioConsult';
 
 // 前端壓縮（省費用）
 async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
@@ -395,6 +396,12 @@ export default function HomeClient() {
       </p>
     </div>
   </div>
+</section>
+
+      {/* 聲音諮詢 */}
+<section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
+  <h3 style={{ marginTop: 0 }}>聲音諮詢：</h3>
+  <AudioConsult species={species} />
 </section>
 
       {/* 內心劇場（分析完成後才顯示；有本人照→小人國，否則→說話泡泡） */}
