@@ -4,9 +4,15 @@ import { useState, useRef, useEffect } from 'react';
 
 const MAX_SECONDS = 20;
 const MAX_UPLOAD_MB = 5;
-const VIDEO_EXT = ['.mp4', '.mov', '.mkv', '.avi', '.wmv', '.m4v', '.webm']; // 以防某些瀏覽器沒給 mime
+const VIDEO_EXT = ['.mp4', '.mov', '.mkv', '.avi', '.wmv', '.m4v', '.webm']; // 保險擋影片
 
-export default function AudioConsult({ species, onAdvice }) {
+/**
+ * Props:
+ * - species: 'cat' | 'dog' | 'plant'
+ * - onAdvice?: (text: string|null) => void
+ * - onSpeciesChange?: (next: 'cat'|'dog'|'plant') => void
+ */
+export default function AudioConsult({ species, onAdvice, onSpeciesChange }) {
   const [recording, setRecording] = useState(false);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -25,7 +31,7 @@ export default function AudioConsult({ species, onAdvice }) {
   // 上傳 input
   const fileRef = useRef(null);
 
-  // 倒數控制
+  // ===== 倒數控制 =====
   useEffect(() => {
     if (recording) {
       startTimeRef.current = Date.now();
@@ -46,6 +52,7 @@ export default function AudioConsult({ species, onAdvice }) {
   const secondsLeft = Math.max(0, MAX_SECONDS - Math.floor(elapsedMs / 1000));
   const progress = Math.min(1, elapsedMs / (MAX_SECONDS * 1000));
 
+  // ===== 錄音 =====
   async function startRecording() {
     try {
       if (loading) return;
@@ -64,8 +71,7 @@ export default function AudioConsult({ species, onAdvice }) {
         try { mr.stream.getTracks().forEach(t => t.stop()); } catch {}
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
         setAudioURL(URL.createObjectURL(blob));
-        const dataURL = await blobToDataURL(blob);
-        await sendToServer(dataURL);
+        await handleUpload(blob); // 自動上傳分析
       };
 
       mr.start();
@@ -83,11 +89,10 @@ export default function AudioConsult({ species, onAdvice }) {
     setRecording(false);
   }
 
-  // 上傳現成音檔（檔案類型 + 長度檢查）
+  // ===== 上傳現成音檔（擋影片＋長度檢查） =====
   async function onFileChange(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-
     if (recording) stopRecording();
 
     // 大小限制
@@ -122,10 +127,9 @@ export default function AudioConsult({ species, onAdvice }) {
         e.target.value = '';
         return;
       }
-
       setAudioURL(objectURL); // 預覽
-      const dataURL = await fileToDataURL(file);
-      await sendToServer(dataURL);
+
+      await handleUpload(file);
     } catch (err) {
       setResult({ error: '讀取檔案失敗：' + (err?.message || String(err)) });
     } finally {
@@ -134,18 +138,39 @@ export default function AudioConsult({ species, onAdvice }) {
     }
   }
 
-  async function sendToServer(audioDataURL) {
+  // ===== 共用上傳（含偵測不一致→詢問是否切換→重送） =====
+  async function handleUpload(fileOrBlob) {
     setLoading(true);
     setResult(null);
     try {
-      const res = await fetch('/api/audio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ species, audioDataURL }),
-      });
-      const data = await res.json();
+      const formData = new FormData();
+      formData.append('file', fileOrBlob, 'voice.webm');
+      formData.append('species', species); // 使用者目前的選擇
+      formData.append('lang', 'zh');
+
+      let data = await fetch('/api/audio', { method: 'POST', body: formData }).then(r => r.json());
+
+      // 檢查是否與使用者選擇不一致（且信心夠高）
+      const detected = data?.detected_species;
+      const conf = typeof data?.confidence === 'number' ? data.confidence : 0;
+      const mismatch = detected && detected !== 'unknown' && detected !== species && conf >= 0.7;
+
+      if (mismatch) {
+        const zh = detected === 'cat' ? '貓' : detected === 'dog' ? '狗' : '植物';
+        const ok = confirm(`語音聽起來像：${zh}（信心 ${(conf * 100).toFixed(0)}%）。要切換成「${zh}」並重新分析嗎？`);
+        if (ok) {
+          onSpeciesChange?.(detected); // 通知父層切換 UI
+          const retry = new FormData();
+          retry.append('file', fileOrBlob, 'voice.webm');
+          retry.append('species', detected);
+          retry.append('lang', 'zh');
+          data = await fetch('/api/audio', { method: 'POST', body: retry }).then(r => r.json());
+        }
+      }
+
+      // 顯示結果，並把 reply 傳回父層（提供內心劇場用）
       setResult(data);
-      if (data?.advice) onAdvice?.(data.advice);
+      if (data?.reply) onAdvice?.(data.reply);
     } catch (err) {
       setResult({ error: '發生錯誤：' + (err?.message || String(err)) });
     } finally {
@@ -163,10 +188,7 @@ export default function AudioConsult({ species, onAdvice }) {
         {recording && (
           <span
             aria-live="polite"
-            style={{
-              fontSize: 13, padding: '2px 8px', borderRadius: 999,
-              background: '#fee2e2', color: '#991b1b'
-            }}
+            style={{ fontSize: 13, padding: '2px 8px', borderRadius: 999, background: '#fee2e2', color: '#991b1b' }}
           >
             錄音中… 剩餘 {secondsLeft} 秒
           </span>
@@ -217,12 +239,15 @@ export default function AudioConsult({ species, onAdvice }) {
       {loading && <p style={{ marginTop: 8 }}>⏳ 分析中，請稍候…</p>}
 
       {/* 結果顯示 */}
-      {result?.advice && (
+      {result?.reply && (
         <div style={{ marginTop: 12, whiteSpace: 'pre-line' }}>
           <strong>AI 分析：</strong>
-          <p>{result.advice}</p>
-          {result.hasTranscript && (
-            <p style={{ fontSize: 12, color: '#555' }}>（偵測到人聲文字：{result.transcript}）</p>
+          <p>{result.reply}</p>
+          {result.fun && <p style={{ fontStyle: 'italic', color: '#15803d' }}>🌟 趣味一句話：{result.fun}</p>}
+          {typeof result.confidence === 'number' && result.detected_species && result.detected_species !== 'unknown' && (
+            <p style={{ fontSize: 12, color: '#555' }}>
+              （模型判定：{result.detected_species}，信心 {Math.round(result.confidence * 100)}%）
+            </p>
           )}
         </div>
       )}
@@ -239,18 +264,17 @@ function looksLikeVideoByName(nameLower) {
   return ['.mp4', '.mov', '.mkv', '.avi', '.wmv', '.m4v'].some(ext => nameLower.endsWith(ext));
 }
 
-/** 讀取 <audio> 的 duration，檢查是否在上限內 */
+/** 讀取 <audio> 的 duration，檢查是否在上限內（含 Safari 保險） */
 function ensureDurationWithin(objectURL, maxSec) {
   return new Promise((resolve) => {
     const audio = new Audio();
     audio.preload = 'metadata';
     audio.onloadedmetadata = () => {
-      // Safari 有時會回 NaN；遇到 NaN 就放行但提示（可改成直接擋）
       if (Number.isNaN(audio.duration)) {
         console.warn('無法讀取音檔長度，放行但建議壓在 20 秒以內');
         resolve(true);
       } else {
-        resolve(audio.duration <= maxSec + 0.3); // 給一點點誤差
+        resolve(audio.duration <= maxSec + 0.3); // 容許一點浮動
       }
       URL.revokeObjectURL(objectURL);
     };
@@ -260,25 +284,5 @@ function ensureDurationWithin(objectURL, maxSec) {
       resolve(true);
     };
     audio.src = objectURL;
-  });
-}
-
-/** File → dataURL */
-function fileToDataURL(file) {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = reject;
-    r.readAsDataURL(file);
-  });
-}
-
-/** Blob → dataURL */
-function blobToDataURL(blob) {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = reject;
-    r.readAsDataURL(blob);
   });
 }
