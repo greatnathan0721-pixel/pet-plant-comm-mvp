@@ -3,108 +3,116 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
-import { toFile } from "openai/uploads";
+import fs from "fs/promises";
+import path from "path";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// 把 dataURL 拆出 base64 與格式
-function parseDataURL(dataURL) {
-  const m = /^data:(.*?);base64,(.*)$/.exec(dataURL || "");
-  if (!m) return null;
-  const mime = m[1] || "audio/webm";
-  const base64 = m[2];
-  // 推斷副檔名/格式（給多模態用）
-  const format =
-    mime.includes("webm") ? "webm" :
-    mime.includes("mp3") ? "mp3" :
-    mime.includes("m4a") ? "m4a" :
-    mime.includes("wav") ? "wav" :
-    "webm";
-  return { mime, base64, format };
-}
-
-// 安全限制：2.5MB 以內（MVP 可依需要微調）
-const MAX_BYTES = 2.5 * 1024 * 1024;
-
 export async function POST(req) {
   try {
-    const { species = "cat", audioDataURL, lang = "zh" } = await req.json();
-    if (!audioDataURL) {
-      return NextResponse.json({ error: "缺少 audioDataURL" }, { status: 400 });
+    const formData = await req.formData();
+    const file = formData.get("file");
+    const species = (formData.get("species") || "unknown").toString();
+    const lang = (formData.get("lang") || "zh").toString();
+
+    if (!file) {
+      return NextResponse.json({ error: "Missing file" }, { status: 400 });
     }
 
-    const parsed = parseDataURL(audioDataURL);
-    if (!parsed) {
-      return NextResponse.json({ error: "音檔格式錯誤：非 dataURL/base64" }, { status: 400 });
-    }
+    // 寫到 /tmp 以供轉錄
+    const buf = Buffer.from(await file.arrayBuffer());
+    const safeName = (file.name || "voice.webm").replace(/[^\w.\-]+/g, "_");
+    const tmpPath = path.join("/tmp", safeName);
+    await fs.writeFile(tmpPath, buf);
 
-    const { mime, base64, format } = parsed;
-    const buf = Buffer.from(base64, "base64");
-    if (buf.byteLength > MAX_BYTES) {
-      return NextResponse.json({ error: `音檔過大（${(buf.byteLength/1024/1024).toFixed(2)}MB）` }, { status: 400 });
-    }
-
-    // 先嘗試轉文字（若有人聲/講話時有幫助；寵物叫聲沒文字也沒關係）
-    let transcript = "";
+    // 1) 語音轉文字（可用 whisper-1 或 gpt-4o-mini-transcribe）
+    let transcriptText = "";
     try {
-      const whisper = await openai.audio.transcriptions.create({
-        file: await toFile(buf, `voice.${format}`),
-        model: "whisper-1",
-        response_format: "json",
-        temperature: 0,
+      const tr = await openai.audio.transcriptions.create({
+        file: await import("node:fs").then(m => m.createReadStream(tmpPath)),
+        model: "gpt-4o-mini-transcribe",
       });
-      transcript = (whisper?.text || "").trim();
-    } catch {
-      // 忽略 whisper 失敗，不要阻斷流程
+      transcriptText = (tr.text || "").trim();
+    } catch (err) {
+      // 轉錄失敗也要安全回覆
+      await safeUnlink(tmpPath);
+      return NextResponse.json(
+        { error: "Transcription failed", details: String(err?.message || err) },
+        { status: 500 }
+      );
+    } finally {
+      await safeUnlink(tmpPath);
     }
 
-    // 多模態音訊理解（重點）：把原始音訊送進模型判讀
+    // 2) 讓模型輸出 專業建議 + 趣味一句話 + 物種偵測
     const sys =
       lang === "zh"
-        ? `你是《寵物植物溝通 App》助理。使用者提供的是「原始音訊」，可能是貓/狗的叫聲或環境聲。
-請根據聲學特徵（節奏、頻率、時長、斷續、緊張度）推測可能的「情緒/需求」與「風險等級」。
-輸出結構（繁中）：
-1) 情境解讀（1-2句）
-2) 專業建議（3-5點，具體可行）
-3) 何時需要就醫/專業協助（若無風險寫「目前無」）
-禁止醫療診斷；保守而實用。物種：${species}`
-        : `You are the Pets & Plants assistant. The user sends raw audio (pet sounds/environment). 
-Infer likely emotion/need and risk from acoustic patterns (tempo, frequency, intensity, burstiness).
-Output:
-1) Situation (1-2)
-2) Advice (3-5 actionable bullets)
-3) When to seek vet/pro help (or "None" if low risk)
-No medical diagnosis. Species: ${species}`;
+        ? `你是《寵物植物溝通 App》的聲音分析助理。輸入是寵物或植物的叫聲之轉錄文字。
+請：
+- 先用 2–3 句解讀情境/可能原因（避免醫療診斷）
+- 提出 3–5 點具體照護建議（步驟化）
+- 給 1 句簡短的趣味話（不喧賓奪主）
+同時你 *務必* 僅輸出下列 JSON（不要任何多餘文字）：
+{
+  "reply": "string",              // 專業建議（繁體中文）
+  "fun": "string",                // 趣味一句話，可留空字串
+  "detected_species": "cat" | "dog" | "plant" | "unknown",
+  "confidence": number            // 0..1，對 detected_species 的信心
+}
+若不確定物種就回 "unknown" 與 0。`
+        : `You are the Pets & Plants voice analysis assistant. Input is the transcription of an animal/plant sound.
+Please:
+- Interpret the situation in 2–3 sentences (no medical diagnosis)
+- Provide 3–5 concrete care tips
+- Add one short fun one-liner
+You MUST output ONLY this JSON (no extra text):
+{
+  "reply": "string",
+  "fun": "string",
+  "detected_species": "cat" | "dog" | "plant" | "unknown",
+  "confidence": number
+}
+If unsure, return "unknown" and 0.`;
 
-    const userParts = [];
-    // 把音檔本體丟給模型（多模態）
-    userParts.push({
-      type: "input_audio",
-      audio: { data: base64, format }
-    });
-    // 如果有轉文字（可能有人聲解說），附帶給模型參考
-    if (transcript) {
-      userParts.push({ type: "text", text: `（附帶人聲轉文字）${transcript}` });
-    }
+    const userMsg =
+      lang === "zh"
+        ? `使用者選的物種：${species}\n語音轉文字：${transcriptText || "(空白)"}\n請依規格只回 JSON。`
+        : `User selected species: ${species}\nTranscript: ${transcriptText || "(empty)"}\nReturn JSON only.`;
 
     const resp = await openai.responses.create({
-      model: "gpt-4o-mini", // 支援音訊理解且成本較低，適合 MVP
+      model: "gpt-4.1-mini",
+      temperature: 0.5,
       input: [
         { role: "system", content: sys },
-        { role: "user", content: userParts }
+        { role: "user", content: userMsg },
       ],
-      temperature: 0.4
     });
 
-    const advice = resp.output_text?.trim() || "";
+    const raw = resp.output_text?.trim() || "";
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      const m = raw.match(/\{[\s\S]*\}$/);
+      parsed = m ? JSON.parse(m[0]) : {};
+    }
 
-    return NextResponse.json({
-      ok: true,
-      hasTranscript: !!transcript,
-      transcript,
-      advice,
-      model: "gpt-4o-mini + whisper-1"
-    });
+    const payload = {
+      reply: typeof parsed.reply === "string" ? parsed.reply : "（沒有回覆）",
+      fun: typeof parsed.fun === "string" ? parsed.fun : "",
+      detected_species:
+        parsed.detected_species === "cat" ||
+        parsed.detected_species === "dog" ||
+        parsed.detected_species === "plant"
+          ? parsed.detected_species
+          : "unknown",
+      confidence:
+        typeof parsed.confidence === "number"
+          ? Math.max(0, Math.min(1, parsed.confidence))
+          : 0,
+    };
+
+    return NextResponse.json(payload);
   } catch (e) {
     console.error(e);
     return NextResponse.json(
@@ -112,4 +120,8 @@ No medical diagnosis. Species: ${species}`;
       { status: 500 }
     );
   }
+}
+
+async function safeUnlink(p) {
+  try { await fs.unlink(p); } catch {}
 }
