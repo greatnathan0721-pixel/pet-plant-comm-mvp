@@ -3,84 +3,97 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
-import { createClient } from "@supabase/supabase-js";
+
+// 這支 API：分析「寵物照片」並回覆專業建議
+// ✨ 新增：要求模型同時回傳 detected_species + confidence
+// - detected_species: "cat" | "dog" | "plant" | "unknown"
+// - confidence: 0~1
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-
-// 估算 dataURL 大小（KB）
-function estimateBase64SizeKB(dataURL) {
-  const base64 = (dataURL || "").split(",")[1] || "";
-  const bytes = Math.ceil((base64.length * 3) / 4); // 4/3 轉換
-  return Math.round(bytes / 1024);
-}
-
-function sysPrompt(lang) {
-  return lang === "zh"
-    ? `你是《寵物植物溝通 App》助理，用繁體中文回答。
-請根據使用者的照片與描述，輸出：
-1) 情境解讀（2-3句）
-2) 專業建議（3-5點，具體步驟）
-3) 趣味一句話（可愛但不喧賓奪主）
-必要時提醒就醫/專業協助。不做醫療診斷。`
-    : `You are the Pets & Plants Communication assistant.
-From the photo and the user's note, provide:
-1) Situation interpretation (2–3 sentences)
-2) Professional advice (3–5 actionable bullets)
-3) Fun one-liner (subtle)
-Add vet/pro-help warning when risk is high. No medical diagnosis.`;
-}
 
 export async function POST(req) {
   try {
-    const { species = "cat", userText = "", imageData, lang = "zh" } = await req.json();
+    const body = await req.json();
+    const { species, userText = "", imageData, lang = "zh" } = body || {};
 
-    if (!imageData || !imageData.startsWith("data:image/")) {
-      return NextResponse.json(
-        { error: "Invalid imageData: expecting data URL (data:image/...;base64,...)" },
-        { status: 400 }
-      );
+    if (!imageData) {
+      return NextResponse.json({ error: "Missing imageData" }, { status: 400 });
     }
 
-    // ⛔️ 大小限制：700KB（可依需求調整）
-    const sizeKB = estimateBase64SizeKB(imageData);
-    if (sizeKB > 700) {
-      return NextResponse.json(
-        { error: `Image too large (${sizeKB}KB). 請用較小尺寸上傳（建議最長邊 720、品質 0.7）。` },
-        { status: 413 } // Payload Too Large
-      );
-    }
+    const sys =
+      lang === "zh"
+        ? `你是《寵物植物溝通 App》的圖片分析助理，請用繁體中文、清楚、負責任地回覆。
+- 不得做醫療診斷；若風險高，提醒就醫/找專業人士。
+- 根據照片與描述，給 3~5 點具體建議（步驟化）。
+- 同時請你 *務必* 準確輸出 JSON 欄位：
+  - reply: string（專業分析與建議，繁體中文）
+  - fun: string（趣味一句話，可愛不喧賓奪主；若無就給空字串）
+  - detected_species: "cat" | "dog" | "plant" | "unknown"
+  - confidence: 0~1 的數字（你對 detected_species 的信心）
+若不確定物種就回 unknown 與 0。`
+        : `You are the image-analysis assistant for a Pets & Plants app. Provide clear, safe guidance (no medical diagnosis). Output JSON with:
+- reply: string (advice, English)
+- fun: string (one-liner, optional)
+- detected_species: "cat" | "dog" | "plant" | "unknown"
+- confidence: number 0..1 (confidence for detected_species).
+If uncertain, return unknown with 0.`;
 
-    const messages = [
-      { role: "system", content: sysPrompt(lang) },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: `物種: ${species}\n使用者描述: ${userText || "（無）"}` },
-          { type: "image_url", image_url: { url: imageData } },
-        ],
-      },
-    ];
+    const userPrompt =
+      lang === "zh"
+        ? `使用者選擇的物種: ${species || "(未提供)"}。
+補充描述: ${userText || "(無)"}。
+請先理解照片內容，再給建議，最後輸出 *唯一* 的 JSON（不要多餘文字）。`
+        : `User selected species: ${species || "(n/a)"}.
+User notes: ${userText || "(none)"}.
+Analyze the photo, then return *only* the JSON described in the system message (no extra text).`;
 
-    // 呼叫 GPT-4o-mini（支援 Vision）
-    const chat = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages,
+    // 用 Responses API：傳文字 + 圖片（data URL）
+    const resp = await openai.responses.create({
+      model: "gpt-4.1-mini",
       temperature: 0.5,
+      input: [
+        { role: "system", content: sys },
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: userPrompt },
+            // 傳入圖片（data URL）
+            { type: "input_image", image_url: imageData },
+          ],
+        },
+      ],
     });
 
-    const text = chat?.choices?.[0]?.message?.content?.trim() || "（沒有回覆）";
+    const text = resp.output_text?.trim() || "";
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      // 容錯：若不是純 JSON，就嘗試截取 { ... }
+      const m = text.match(/\{[\s\S]*\}$/);
+      if (m) {
+        parsed = JSON.parse(m[0]);
+      } else {
+        parsed = {};
+      }
+    }
 
-    // 寫入 DB（短期用 Base64 存，之後可改 Storage URL）
-    const { error: dbError } = await supabase.from("image_analyses").insert({
-      species,
-      user_text: userText,
-      image_data: imageData,
-      reply: text,
-    });
-    if (dbError) console.error("寫入 image_analyses 錯誤：", dbError);
+    const payload = {
+      reply: typeof parsed.reply === "string" ? parsed.reply : "（沒有回覆）",
+      fun: typeof parsed.fun === "string" ? parsed.fun : "",
+      detected_species:
+        parsed.detected_species === "cat" ||
+        parsed.detected_species === "dog" ||
+        parsed.detected_species === "plant"
+          ? parsed.detected_species
+          : "unknown",
+      confidence:
+        typeof parsed.confidence === "number"
+          ? Math.max(0, Math.min(1, parsed.confidence))
+          : 0,
+    };
 
-    return NextResponse.json({ reply: text, model: "gpt-4o-mini" });
+    return NextResponse.json(payload);
   } catch (e) {
     console.error(e);
     return NextResponse.json(
