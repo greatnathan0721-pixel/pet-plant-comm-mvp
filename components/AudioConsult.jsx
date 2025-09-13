@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 
 const MAX_SECONDS = 20;
 const MAX_UPLOAD_MB = 5;
+const VIDEO_EXT = ['.mp4', '.mov', '.mkv', '.avi', '.wmv', '.m4v', '.webm']; // 以防某些瀏覽器沒給 mime
 
 export default function AudioConsult({ species, onAdvice }) {
   const [recording, setRecording] = useState(false);
@@ -82,15 +83,28 @@ export default function AudioConsult({ species, onAdvice }) {
     setRecording(false);
   }
 
-  // 上傳現成音檔
+  // 上傳現成音檔（檔案類型 + 長度檢查）
   async function onFileChange(e) {
     const file = e.target.files?.[0];
     if (!file) return;
 
     if (recording) stopRecording();
 
+    // 大小限制
     if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
       alert(`音檔過大，請小於 ${MAX_UPLOAD_MB} MB`);
+      e.target.value = '';
+      return;
+    }
+
+    // 類型/副檔名檢查：擋影片
+    const nameLower = (file.name || '').toLowerCase();
+    const isVideoExt = VIDEO_EXT.some(ext => nameLower.endsWith(ext));
+    const isAudioMime = (file.type || '').startsWith('audio/');
+    const isVideoMime = (file.type || '').startsWith('video/');
+
+    if (isVideoMime || isVideoExt || (!isAudioMime && looksLikeVideoByName(nameLower))) {
+      alert('請上傳音檔（mp3, m4a, wav, webm），影片檔不支援');
       e.target.value = '';
       return;
     }
@@ -98,12 +112,24 @@ export default function AudioConsult({ species, onAdvice }) {
     try {
       setResult(null);
       onAdvice?.(null);
-      setAudioURL(URL.createObjectURL(file));
+
+      // 先用 <audio> 讀取長度，超過 20 秒就擋下
+      const objectURL = URL.createObjectURL(file);
+      const ok = await ensureDurationWithin(objectURL, MAX_SECONDS);
+      if (!ok) {
+        alert(`音檔超過 ${MAX_SECONDS} 秒，請重新上傳較短的片段`);
+        URL.revokeObjectURL(objectURL);
+        e.target.value = '';
+        return;
+      }
+
+      setAudioURL(objectURL); // 預覽
       const dataURL = await fileToDataURL(file);
       await sendToServer(dataURL);
     } catch (err) {
       setResult({ error: '讀取檔案失敗：' + (err?.message || String(err)) });
     } finally {
+      // 清掉 input 的值，方便重選同一檔案
       e.target.value = '';
     }
   }
@@ -206,6 +232,35 @@ export default function AudioConsult({ species, onAdvice }) {
       )}
     </div>
   );
+}
+
+/** 依檔名猜是不是影片（當 type 空白時的保險） */
+function looksLikeVideoByName(nameLower) {
+  return ['.mp4', '.mov', '.mkv', '.avi', '.wmv', '.m4v'].some(ext => nameLower.endsWith(ext));
+}
+
+/** 讀取 <audio> 的 duration，檢查是否在上限內 */
+function ensureDurationWithin(objectURL, maxSec) {
+  return new Promise((resolve) => {
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => {
+      // Safari 有時會回 NaN；遇到 NaN 就放行但提示（可改成直接擋）
+      if (Number.isNaN(audio.duration)) {
+        console.warn('無法讀取音檔長度，放行但建議壓在 20 秒以內');
+        resolve(true);
+      } else {
+        resolve(audio.duration <= maxSec + 0.3); // 給一點點誤差
+      }
+      URL.revokeObjectURL(objectURL);
+    };
+    audio.onerror = () => {
+      console.warn('讀取音檔長度失敗，放行但建議壓在 20 秒以內');
+      URL.revokeObjectURL(objectURL);
+      resolve(true);
+    };
+    audio.src = objectURL;
+  });
 }
 
 /** File → dataURL */
