@@ -188,37 +188,74 @@ export default function HomeClient2() {
   }
 
   // --- 照片諮詢（自動分流：植物→辨識；動物→一般圖片分析） ---
-  async function handlePhotoConsult() {
-    const file = fileRef.current?.files?.[0];
-    if (!file) return alert('請先選擇諮詢照片');
-    setImgLoading(true); setPlantLoading(true);
-    setImgReply(''); setPlantResult(null); setTheaterUrl('');
-    try {
-      const dataURL = await compressImageToDataURL(file, 720, 0.7);
-      if (species === 'plant') {
+ async function handlePhotoConsult() {
+  const file = fileRef.current?.files?.[0];
+  if (!file) return alert('請先選擇諮詢照片');
+
+  setImgLoading(true); setPlantLoading(true);
+  setImgReply(''); setPlantResult(null); setTheaterUrl('');
+
+  try {
+    const dataURL = await compressImageToDataURL(file, 720, 0.7);
+
+    // 1) 先照「目前選擇的 species」送一次
+    async function sendBy(speciesToUse) {
+      if (speciesToUse === 'plant') {
         const res = await fetch('/api/plant/identify', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ imageData: dataURL, userText })
         });
-        const data = await res.json();
-        if (data.error) setPlantResult({ error: data.error, details: data.details });
-        else setPlantResult(data.result);
+        return res.json();
       } else {
         const res = await fetch('/api/analyze', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ species, userText, imageData: dataURL, lang: 'zh' })
+          body: JSON.stringify({ species: speciesToUse, userText, imageData: dataURL, lang: 'zh' })
         });
-        const data = await res.json();
-        if (data.error) setImgReply(`❌ 錯誤：${data.error}${data.details ? '｜' + data.details : ''}`);
-        else setImgReply(data.reply || '（沒有回覆）');
+        return res.json();
       }
-    } catch {
-      if (species === 'plant') setPlantResult({ error: 'Internal error' });
-      else setImgReply('⚠️ 發生錯誤，請稍候再試');
-    } finally {
-      setImgLoading(false); setPlantLoading(false);
     }
+
+    let data = await sendBy(species);
+
+    // 2) 若這次回傳帶偵測欄位，且與目前 species 明顯不一致 → 提示切換
+    const detected = data?.detected_species;
+    const conf = typeof data?.confidence === 'number' ? data.confidence : 0;
+    const mismatch =
+      detected &&
+      detected !== 'unknown' &&
+      detected !== species &&
+      conf >= 0.7;
+
+    if (mismatch) {
+      const zh =
+        detected === 'cat' ? '貓' :
+        detected === 'dog' ? '狗' :
+        detected === 'plant' ? '植物' : '未知';
+      const ok = confirm(`看起來像是：${zh}（信心 ${(conf * 100).toFixed(0)}%）。要切換成「${zh}」並用正確方式重新分析嗎？`);
+      if (ok) {
+        // 切 species，並依偵測到的物種重送一次
+        setSpecies(detected);
+        data = await sendBy(detected);
+      }
+    }
+
+    // 3) 照結果渲染
+    if (species === 'plant' || (mismatch && detected === 'plant')) {
+      if (data.error) setPlantResult({ error: data.error, details: data.details });
+      else setPlantResult(data.result || { reply: data.reply, fun_one_liner: data.fun });
+    } else {
+      if (data.error) setImgReply(`❌ 錯誤：${data.error}${data.details ? '｜' + data.details : ''}`);
+      else setImgReply(data.reply || '（沒有回覆）');
+    }
+
+  } catch {
+    if (species === 'plant') setPlantResult({ error: 'Internal error' });
+    else setImgReply('⚠️ 發生錯誤，請稍候再試');
+  } finally {
+    setImgLoading(false); setPlantLoading(false);
   }
+}
+
 
   // --- 生成內心劇場 ---
   async function handleGenerateTheater() {
