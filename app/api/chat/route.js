@@ -67,12 +67,22 @@ async function getCached(hash) {
   const now = new Date().toISOString();
   const { data } = await supabase
     .from("response_cache")
-    .select("payload, expire_at")
+    .select("payload, expire_at, hits")
     .eq("hash_key", hash)
     .gte("expire_at", now)
     .maybeSingle();
-  return data?.payload ?? null;
+
+  if (!data) return null;
+
+  // 命中就自動 +1
+  await supabase
+    .from("response_cache")
+    .update({ hits: (data.hits || 0) + 1 })
+    .eq("hash_key", hash);
+
+  return data.payload;
 }
+
 
 async function setCached(hash, payload) {
   const expireAt = new Date(Date.now() + CACHE_TTL_SECONDS * 1000).toISOString();
