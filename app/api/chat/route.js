@@ -17,6 +17,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 // ---- Chat with fallback ----
 async function chatWithFallback(messages, temperature = 0.5) {
+  // 可保留你原本的候選；若未來要更新，可改為 ["gpt-4o-mini", "gpt-4.1-mini"]
   const candidates = ["gpt-4o-mini", "gpt-3.5-turbo"];
   let lastError;
 
@@ -63,6 +64,7 @@ function hashKey(parts) {
   return h.digest("hex");
 }
 
+// 命中就自動 +1，並回傳 payload 與命中前的 hits
 async function getCached(hash) {
   const now = new Date().toISOString();
   const { data } = await supabase
@@ -74,21 +76,23 @@ async function getCached(hash) {
 
   if (!data) return null;
 
-  // 命中就自動 +1
+  // 命中就 +1
   await supabase
     .from("response_cache")
     .update({ hits: (data.hits || 0) + 1 })
     .eq("hash_key", hash);
 
-  return data.payload;
+  return { payload: data.payload, hits: data.hits ?? 0 };
 }
-
 
 async function setCached(hash, payload) {
   const expireAt = new Date(Date.now() + CACHE_TTL_SECONDS * 1000).toISOString();
   await supabase
     .from("response_cache")
-    .upsert({ hash_key: hash, payload, expire_at: expireAt }, { onConflict: "hash_key" });
+    .upsert(
+      { hash_key: hash, payload, expire_at: expireAt, hits: 0 },
+      { onConflict: "hash_key" }
+    );
 }
 
 async function resolveIntent(speciesSlug, intentSlug, text) {
@@ -179,8 +183,11 @@ export async function POST(req) {
     const intentKey = intent?.slug || "general";
     const cacheKey = hashKey({ s: species, i: intentKey, q: userText, l: lang });
 
+    // 命中快取 → 直接回覆，並附上 _cache / _hits
     const cached = await getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) {
+      return NextResponse.json({ ...cached.payload, _cache: "hit", _hits: (cached.hits ?? 0) + 1 });
+    }
 
     const rag = intent ? await loadRagByIntentId(intent.id) : { contexts: [], knowledge: [], fun: [] };
 
@@ -211,7 +218,7 @@ export async function POST(req) {
     };
 
     await setCached(cacheKey, payload);
-    return NextResponse.json(payload);
+    return NextResponse.json({ ...payload, _cache: "miss", _hits: 0 });
   } catch (e) {
     return NextResponse.json({ error: "Internal error", details: String(e?.message || e) }, { status: 500 });
   }
