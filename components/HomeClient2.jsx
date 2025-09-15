@@ -1,5 +1,5 @@
 'use client';
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef } from 'react';
 import AudioConsult from './AudioConsult';
 
 // --- 前端壓縮圖片（省費用） ---
@@ -142,17 +142,13 @@ export default function HomeClient2() {
   const [humanPreview, setHumanPreview] = useState('');
   const humanRef = useRef(null);
 
-  // 內心劇場
+  // 小劇場圖（不再有獨立區塊，直接顯示在圖片諮詢裡）
   const [theaterUrl, setTheaterUrl] = useState('');
-  const canShowCreative = useMemo(
-    () => !!(preview && (imgReply || plantResult || reply)),
-    [preview, imgReply, plantResult, reply]
-  );
 
   // 語音分析 → 內心劇場台詞來源
   const [audioAdvice, setAudioAdvice] = useState('');
 
-  // ✅ 新增：分析成功後自動產生小劇場圖
+  // 自動產生小劇場圖（分析成功後呼叫）
   async function autoMakeTheater({ from = 'animal', data, preview, humanPreview, fun }) {
     try {
       if (!preview) return;
@@ -173,7 +169,7 @@ export default function HomeClient2() {
       });
       setTheaterUrl(url);
 
-      // 想自動下載再打開下面三行
+      // 若想自動下載，打開下面三行
       // const a = document.createElement('a');
       // a.href = url; a.download = 'theater.png';
       // a.click();
@@ -182,7 +178,7 @@ export default function HomeClient2() {
     }
   }
 
-  // --- 文字諮詢 ---
+  // 文字諮詢
   async function handleTextSubmit(e) {
     e.preventDefault();
     setLoading(true); setReply(''); setFun('');
@@ -201,7 +197,7 @@ export default function HomeClient2() {
     }
   }
 
-  // --- 照片上傳 ---
+  // 照片上傳
   function onFileChange(e) {
     const f = e.target.files?.[0];
     if (!f) return setPreview('');
@@ -217,7 +213,7 @@ export default function HomeClient2() {
     reader.readAsDataURL(f);
   }
 
-  // --- 照片諮詢（自動分流：植物→辨識；動物→一般圖片分析） ---
+  // 照片諮詢（植物→辨識；動物→一般圖片分析），完成後自動產生小劇場
   async function handlePhotoConsult() {
     const file = fileRef.current?.files?.[0];
     if (!file) return alert('請先選擇諮詢照片');
@@ -228,7 +224,6 @@ export default function HomeClient2() {
     try {
       const dataURL = await compressImageToDataURL(file, 720, 0.7);
 
-      // 1) 依目前選擇的 species 送一次
       async function sendBy(speciesToUse) {
         if (speciesToUse === 'plant') {
           const res = await fetch('/api/plant/identify', {
@@ -247,17 +242,13 @@ export default function HomeClient2() {
 
       let data = await sendBy(species);
 
-      // 2) 若模型偵測與目前 species 不一致且信心高 → 提示切換並重送
       const detected = data?.detected_species;
       const conf = typeof data?.confidence === 'number' ? data.confidence : 0;
       const mismatch =
         detected && detected !== 'unknown' && detected !== species && conf >= 0.7;
 
       if (mismatch) {
-        const zh =
-          detected === 'cat' ? '貓' :
-          detected === 'dog' ? '狗' :
-          detected === 'plant' ? '植物' : '未知';
+        const zh = detected === 'cat' ? '貓' : detected === 'dog' ? '狗' : detected === 'plant' ? '植物' : '未知';
         const ok = confirm(`看起來像是：${zh}（信心 ${(conf * 100).toFixed(0)}%）。要切換成「${zh}」並用正確方式重新分析嗎？`);
         if (ok) {
           setSpecies(detected);
@@ -265,33 +256,21 @@ export default function HomeClient2() {
         }
       }
 
-      // 3) 顯示結果 & ✅ 自動產生小劇場
+      // 顯示結果 & 自動產生小劇場圖
       if (species === 'plant' || (mismatch && detected === 'plant')) {
         if (data.error) {
           setPlantResult({ error: data.error, details: data.details });
         } else {
           const result = data.result || { reply: data.reply, fun_one_liner: data.fun };
           setPlantResult(result);
-          await autoMakeTheater({
-            from: 'plant',
-            data: result,
-            preview,
-            humanPreview,
-            fun: result?.fun_one_liner,
-          });
+          await autoMakeTheater({ from: 'plant', data: result, preview, humanPreview, fun: result?.fun_one_liner });
         }
       } else {
         if (data.error) {
           setImgReply(`❌ 錯誤：${data.error}${data.details ? '｜' + data.details : ''}`);
         } else {
           setImgReply(data.reply || '（沒有回覆）');
-          await autoMakeTheater({
-            from: 'animal',
-            data,
-            preview,
-            humanPreview,
-            fun: data.fun,
-          });
+          await autoMakeTheater({ from: 'animal', data, preview, humanPreview, fun: data.fun });
         }
       }
 
@@ -301,26 +280,6 @@ export default function HomeClient2() {
     } finally {
       setImgLoading(false); setPlantLoading(false);
     }
-  }
-
-  // （保留：手動產生備援）
-  async function handleGenerateTheater() {
-    if (!preview) return alert('請先選擇主照片');
-    const style = humanPreview ? 'realistic_bubble_human' : 'realistic_bubble';
-    const fromAudio = audioAdvice ? audioAdvice.split('\n')[0].slice(0, 60) : '';
-    const petThought =
-      (fromAudio) ||
-      (plantResult?.fun_one_liner) ||
-      (plantResult?.care_steps?.[0] ? `今天的任務：${plantResult.care_steps[0]}` : '') ||
-      (fun ? fun : '今天也要好好表現！');
-
-    const url = await generateTheaterImage({
-      basePhoto: preview,
-      style,
-      petThought,
-      humanPhoto: humanPreview || undefined
-    });
-    setTheaterUrl(url);
   }
 
   return (
@@ -362,7 +321,7 @@ export default function HomeClient2() {
         )}
       </section>
 
-      {/* 圖片諮詢（左：上傳／右：示意圖） */}
+      {/* 圖片諮詢（左：上傳／右：示意圖；分析後這裡直接顯示小劇場） */}
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
         <h3 style={{ marginTop: 0 }}>圖片諮詢：</h3>
 
@@ -373,24 +332,12 @@ export default function HomeClient2() {
               <button type='button' onClick={() => fileRef.current?.click()} style={{ padding: '10px 16px' }}>
                 選擇諮詢照片
               </button>
-              <input
-                ref={fileRef}
-                type='file'
-                accept='image/*'
-                onChange={onFileChange}
-                style={{ display: 'none' }}
-              />
+              <input ref={fileRef} type='file' accept='image/*' onChange={onFileChange} style={{ display: 'none' }}/>
 
               <button type='button' onClick={() => humanRef.current?.click()} style={{ padding: '10px 16px' }}>
                 選擇本人照片（可選）
               </button>
-              <input
-                ref={humanRef}
-                type='file'
-                accept='image/*'
-                onChange={onHumanChange}
-                style={{ display: 'none' }}
-              />
+              <input ref={humanRef} type='file' accept='image/*' onChange={onHumanChange} style={{ display: 'none' }}/>
             </div>
 
             <p style={{ marginTop: 8, fontSize: 13, color: '#666' }}>
@@ -446,6 +393,21 @@ export default function HomeClient2() {
                     植物辨識錯誤：{plantResult.error}{plantResult.details ? `｜${plantResult.details}` : ''}
                   </div>
                 )}
+
+                {/* 🎭 小劇場：分析完成後直接顯示在這裡 */}
+                {theaterUrl && (
+                  <div style={{ marginTop: 16 }}>
+                    <strong>🎭 內心劇場</strong>
+                    <div style={{ marginTop: 8 }}>
+                      <img src={theaterUrl} alt="內心劇場" style={{ width: '100%', borderRadius: 8, border: '1px solid #ddd' }} />
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <a href={theaterUrl} download="theater.png" style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6 }}>
+                        下載圖片
+                      </a>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -474,28 +436,6 @@ export default function HomeClient2() {
           </div>
         )}
       </section>
-
-      {/* 內心劇場（自動產生；下方保留一鍵重生作為備援） */}
-      {canShowCreative && (
-        <section style={{ marginTop: 20, padding: 12, border: '1px solid #eee', borderRadius: 8 }}>
-          <h3>🎭 內心劇場</h3>
-          {theaterUrl && (
-            <div style={{ marginTop: 10 }}>
-              <img src={theaterUrl} alt="內心劇場" style={{ width: '100%', borderRadius: 8, border: '1px solid #ddd' }} />
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-            <button onClick={handleGenerateTheater} style={{ padding: '10px 16px' }}>
-              重新生成（備援）
-            </button>
-            {theaterUrl && (
-              <a href={theaterUrl} download='theater.png' style={{ padding: '10px 16px', border: '1px solid #ddd', borderRadius: 6 }}>
-                下載目前圖片
-              </a>
-            )}
-          </div>
-        </section>
-      )}
 
       <p style={{ marginTop: 40, fontSize: 12, color: '#777', textAlign: 'center' }}>
         ⚠️ 本服務內容僅供參考，非醫療診斷或專業治療建議。若寵物或植物狀況嚴重，請即刻尋求獸醫或專業園藝師協助。
