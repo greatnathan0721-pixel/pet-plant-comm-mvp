@@ -7,22 +7,23 @@ import { createClient } from "@supabase/supabase-js";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
+// ✳️ 要點：文字解析第三人稱；泡泡第一人稱
 const SYS_PROMPT = `You are a plant identification and health analyst.
 Return ONLY a JSON object with keys:
 {
   "common_name": string,
   "scientific_name": string,
   "confidence": number,      
-  "state": string,           // 植物當下狀態，用繁體中文
+  "state": string,           // 植物當下狀態（繁體中文、第三人稱：這株植物/它的葉片…）
   "likely_issues": string[], 
   "care_steps": string[],    
   "severity": "low" | "medium" | "high",
-  "fun_one_liner": string    // 植物第一人稱說的一句話
+  "fun_one_liner": string    // 植物第一人稱說的一句話（例：我有點渴，想喝水～）
 }
 Rules:
 - All fields required.
 - Use Traditional Chinese for all except scientific_name.
-- "fun_one_liner" 必須第一人稱（例：我覺得有點渴了）。`;
+- 「state / likely_issues / care_steps」必須用第三人稱；「fun_one_liner」必須用第一人稱。`;
 
 function estimateBase64SizeKB(dataURL) {
   const base64 = (dataURL || "").split(",")[1] || "";
@@ -73,15 +74,18 @@ export async function POST(req) {
       confidence: typeof parsed.confidence === "number"
         ? Math.max(0, Math.min(1, parsed.confidence))
         : 0,
-      state: parsed.state || "我現在的狀態還不明顯，但請再仔細觀察我的葉片和土壤！",
+      // 文字解析（第三人稱）
+      state: parsed.state || "這株植物目前狀態不明顯，建議留意新葉色澤與介質濕度。",
       likely_issues: Array.isArray(parsed.likely_issues) ? parsed.likely_issues : [],
       care_steps: Array.isArray(parsed.care_steps) ? parsed.care_steps : [],
       severity: parsed.severity || "low",
+      // 圖片泡泡（第一人稱）
       fun_one_liner: parsed.fun_one_liner?.trim()
         ? parsed.fun_one_liner
-        : "哈囉！我是這株小植物，今天也想被好好照顧 🌱",
+        : "我想要剛剛好的陽光和一點水分 🌱",
     };
 
+    // 可選：存 DB
     await supabase.from("image_analyses").insert({
       species: "plant",
       user_text: userText,
