@@ -2,15 +2,15 @@
 import { useState, useRef } from 'react';
 import AudioConsult from './AudioConsult';
 
-// --- 前端壓縮圖片（省費用，交給 /api/analyze 與 /api/plant/identify） ---
+// 前端壓縮，省費用
 async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
   const img = document.createElement('img');
   const reader = new FileReader();
-  const loaded = new Promise((resolve) => {
+  const fileLoaded = new Promise((resolve) => {
     reader.onload = () => { img.onload = resolve; img.src = reader.result; };
   });
   reader.readAsDataURL(file);
-  await loaded;
+  await fileLoaded;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   const { width, height } = img;
@@ -22,32 +22,30 @@ async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
 }
 
 export default function HomeClient2() {
-  // 共用狀態
   const [species, setSpecies] = useState('cat');
   const [userText, setUserText] = useState('');
   const [reply, setReply] = useState('');
   const [fun, setFun] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // 圖片 & 本人照
+  // 圖片
   const [preview, setPreview] = useState('');
-  const [humanPreview, setHumanPreview] = useState('');
   const fileRef = useRef(null);
+  const [humanPreview, setHumanPreview] = useState('');
   const humanRef = useRef(null);
 
-  // 結果
-  const [petResult, setPetResult] = useState(null);     // 動物：{ state, issues, suggestions, fun_one_liner }
-  const [plantResult, setPlantResult] = useState(null); // 植物：{ state, likely_issues, care_steps, fun_one_liner, ... }
-  const [imgLoading, setImgLoading] = useState(false);
-  const [imgReply, setImgReply] = useState('');
+  // 結果（第三人稱）
+  const [plantResult, setPlantResult] = useState(null);
+  const [petResult, setPetResult] = useState(null);
 
-  // 內心小劇場（AI 生成圖）
+  // 生成圖
   const [theaterUrl, setTheaterUrl] = useState('');
+  const [imgLoading, setImgLoading] = useState(false);
 
-  // 語音諮詢（旁支）
+  // 語音（可選）
   const [audioAdvice, setAudioAdvice] = useState('');
 
-  // 文字諮詢
+  // 文字諮詢（不動）
   async function handleTextSubmit(e) {
     e.preventDefault();
     setLoading(true); setReply(''); setFun('');
@@ -66,7 +64,7 @@ export default function HomeClient2() {
     }
   }
 
-  // 讀檔
+  // 選檔
   function onFileChange(e) {
     const f = e.target.files?.[0];
     if (!f) return setPreview('');
@@ -82,95 +80,82 @@ export default function HomeClient2() {
     reader.readAsDataURL(f);
   }
 
-  // 呼叫 AI 生成小劇場（方法 B）
-  async function makeTheaterAI({ basePhoto, humanPhoto, petType, petBubble }) {
+  // 小人國生成（方法 B）：只讓寵物/植物說話
+  async function makeTheater({ sceneData, humanData, bubbleText }) {
+    setTheaterUrl('');
     try {
       const res = await fetch('/api/theater', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          basePhoto,
-          humanPhoto: humanPhoto || null,
-          petType,
-          petBubble,
+          sceneData,
+          humanData: humanData || null,
+          bubbleText: bubbleText || '今天心情超好！',
+          species,
+          lang: 'zh',
         }),
       });
       const data = await res.json();
       if (data?.image) setTheaterUrl(data.image);
     } catch (e) {
-      console.error('makeTheaterAI failed', e);
+      console.error(e);
     }
   }
 
-  // 照片諮詢：植物→ /api/plant/identify；動物→ /api/analyze
-  // 成功後「直接」呼叫 /api/theater 生成合成圖
+  // 照片諮詢 → 完成後自動生成小人國圖
   async function handlePhotoConsult() {
     const file = fileRef.current?.files?.[0];
     if (!file) return alert('請先選擇諮詢照片');
 
     setImgLoading(true);
-    setPetResult(null);
-    setPlantResult(null);
-    setTheaterUrl('');
-    setImgReply('');
+    setPlantResult(null); setPetResult(null); setTheaterUrl('');
 
     try {
       const dataURL = await compressImageToDataURL(file, 720, 0.7);
 
       if (species === 'plant') {
         const res = await fetch('/api/plant/identify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ imageData: dataURL, userText })
         });
-        const data = await res.json();
-        if (data.error) {
-          setImgReply(`❌ 植物辨識錯誤：${data.error}${data.details ? '｜' + data.details : ''}`);
+        const result = await res.json();
+        if (result.error) {
+          setPlantResult({ error: result.error, details: result.details });
         } else {
-          // 你的 /api/plant/identify 回傳的是 payload（或 {result}）
-          const r = data.result ? data.result : data;
-          setPlantResult(r);
-
-          // 泡泡採第一人稱
+          setPlantResult(result);
+          // 泡泡（第一人稱）
           const bubble =
-            (typeof r.fun_one_liner === 'string' && r.fun_one_liner.trim()) ||
+            (result.fun_one_liner && String(result.fun_one_liner)) ||
             '我想要剛剛好的陽光和一點水分 🌱';
-
-          await makeTheaterAI({
-            basePhoto: preview || dataURL,
-            humanPhoto: humanPreview || null,
-            petType: 'plant',
-            petBubble: bubble,
+          await makeTheater({
+            sceneData: preview || dataURL,
+            humanData: humanPreview || null,
+            bubbleText: bubble,
           });
         }
       } else {
         const res = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ species, userText, imageData: dataURL, lang: 'zh' })
         });
-        const data = await res.json();
-        if (data.error) {
-          setImgReply(`❌ 錯誤：${data.error}${data.details ? '｜' + data.details : ''}`);
+        const result = await res.json();
+        if (result.error) {
+          alert(`❌ 錯誤：${result.error}${result.details ? '｜' + result.details : ''}`);
         } else {
-          setPetResult(data);
-
-          // 泡泡採第一人稱（API 會回 fun_one_liner；沒有就用預設）
+          setPetResult(result);
           const bubble =
-            (typeof data.fun_one_liner === 'string' && data.fun_one_liner.trim()) ||
-            '我今天心情不錯，想多睡一會兒～';
-
-          await makeTheaterAI({
-            basePhoto: preview || dataURL,
-            humanPhoto: humanPreview || null,
-            petType: species,
-            petBubble: bubble,
+            (result.fun_one_liner && String(result.fun_one_liner)) ||
+            '我今天就想這樣耍廢～';
+          await makeTheater({
+            sceneData: preview || dataURL,
+            humanData: humanPreview || null,
+            bubbleText: bubble,
           });
         }
       }
     } catch (e) {
       console.error(e);
-      setImgReply('⚠️ 發生錯誤，請稍候再試');
+      alert('⚠️ 發生錯誤，請稍候再試');
     } finally {
       setImgLoading(false);
     }
@@ -180,7 +165,7 @@ export default function HomeClient2() {
     <main style={{ maxWidth: 720, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 16px' }}>
       <h1>寵物溝通 app</h1>
 
-      {/* 選擇物種 */}
+      {/* 物種 */}
       <section style={{ marginTop: 12 }}>
         <h3 style={{ margin: '8px 0' }}>選擇物種：</h3>
         <select value={species} onChange={(e) => setSpecies(e.target.value)} style={{ padding: 8 }}>
@@ -193,19 +178,14 @@ export default function HomeClient2() {
       {/* 文字諮詢 */}
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
         <h3 style={{ marginTop: 0 }}>文字諮詢：</h3>
-        <textarea
-          rows={3}
-          style={{ width: '100%', padding: 10 }}
+        <textarea rows={3} style={{ width: '100%', padding: 10 }}
           placeholder='輸入你的問題…'
-          value={userText}
-          onChange={(e) => setUserText(e.target.value)}
-        />
+          value={userText} onChange={(e) => setUserText(e.target.value)} />
         <div style={{ marginTop: 10 }}>
           <button onClick={handleTextSubmit} disabled={loading} style={{ padding: '10px 16px' }}>
             {loading ? '處理中…' : '送出問題'}
           </button>
         </div>
-
         {reply && (
           <div style={{ marginTop: 12, whiteSpace: 'pre-line' }}>
             <strong>AI 回覆：</strong>
@@ -225,28 +205,16 @@ export default function HomeClient2() {
               <button type='button' onClick={() => fileRef.current?.click()} style={{ padding: '10px 16px' }}>
                 選擇諮詢照片
               </button>
-              <input
-                ref={fileRef}
-                type='file'
-                accept='image/*'
-                onChange={onFileChange}
-                style={{ display: 'none' }}
-              />
+              <input ref={fileRef} type='file' accept='image/*' onChange={onFileChange} style={{ display: 'none' }} />
 
               <button type='button' onClick={() => humanRef.current?.click()} style={{ padding: '10px 16px' }}>
                 選擇本人照片（可選）
               </button>
-              <input
-                ref={humanRef}
-                type='file'
-                accept='image/*'
-                onChange={onHumanChange}
-                style={{ display: 'none' }}
-              />
+              <input ref={humanRef} type='file' accept='image/*' onChange={onHumanChange} style={{ display: 'none' }} />
             </div>
 
             <p style={{ marginTop: 8, fontSize: 13, color: '#666' }}>
-              若上傳自己照片，也可生成你與寵物/植物的「小人國」互動圖（人像僅用於生成，不會儲存於伺服器）。
+              若上傳自己照片，系統會生成「小人國」互動畫面（**只有寵物/植物會說話**，人沒有台詞）。
             </p>
 
             {preview && (
@@ -312,15 +280,11 @@ export default function HomeClient2() {
               </div>
             )}
 
-            {imgReply && (
-              <div style={{ marginTop: 12, color: '#b91c1c' }}>{imgReply}</div>
-            )}
-
-            {/* 內心小劇場（AI 生成） */}
+            {/* 小人國合成結果 */}
             {theaterUrl && (
               <div style={{ marginTop: 16 }}>
                 <strong>🎭 內心小劇場</strong>
-                <img src={theaterUrl} alt="內心劇場" style={{ width: '100%', borderRadius: 8, border: '1px solid #ddd', marginTop: 8 }} />
+                <img src={theaterUrl} alt="theater" style={{ width: '100%', borderRadius: 8, border: '1px solid #ddd', marginTop: 8 }} />
                 <div style={{ marginTop: 8 }}>
                   <a href={theaterUrl} download='theater.png' style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6 }}>
                     下載圖片
@@ -344,13 +308,13 @@ export default function HomeClient2() {
         </div>
       </section>
 
-      {/* 聲音諮詢（僅提示，泡泡依然來自圖像管線的一句話） */}
+      {/* 聲音諮詢（僅輔助，不影響泡泡來源） */}
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
         <h3 style={{ marginTop: 0 }}>聲音諮詢：</h3>
         <AudioConsult species={species} onAdvice={setAudioAdvice} onSpeciesChange={setSpecies} />
         {audioAdvice && (
           <div style={{ marginTop: 8, fontSize: 12, color: '#2563eb' }}>
-            ✅ 已擷取語音分析摘要（僅作輔助）
+            ✅ 已擷取語音分析摘要（圖片泡泡仍以第一人稱 fun_one_liner 為準）
           </div>
         )}
       </section>
