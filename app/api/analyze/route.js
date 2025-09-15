@@ -4,15 +4,20 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-// MVP：不做任何每日次數限制
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req) {
   try {
+    if (!process.env.OPENAI_API_KEY) {
+      return NextResponse.json(
+        { error: "Missing OPENAI_API_KEY" },
+        { status: 500 }
+      );
+    }
+
     const body = await req.json();
     const { species, userText = "", imageData, lang = "zh" } = body || {};
-
-    if (!imageData) {
+    if (!imageData || typeof imageData !== "string") {
       return NextResponse.json({ error: "Missing imageData" }, { status: 400 });
     }
 
@@ -38,61 +43,59 @@ export async function POST(req) {
 
     const userPrompt =
       lang === "zh"
-        ? `使用者目前選擇的物種: ${species || "(未提供)"}。
+        ? `使用者選擇的物種: ${species || "(未提供)"}。
 補充描述: ${userText || "(無)"}。
 請先理解照片內容，再依上面的要求產出唯一 JSON。`
         : `User-selected species: ${species || "(n/a)"}.
 User notes: ${userText || "(none)"}.
 Analyze the photo and return the SINGLE JSON described above.`;
 
-    // 用 Responses API：文字 + 圖片（注意 image_url 需為物件 { url }）
-    const resp = await openai.responses.create({
-      model: "gpt-4.1-mini",
+    // ✅ 用 chat.completions（相容 openai@4.58.1）
+    const chat = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
       temperature: 0.5,
       response_format: { type: "json_object" },
-      input: [
+      messages: [
         { role: "system", content: sys },
         {
           role: "user",
           content: [
-            { type: "input_text", text: userPrompt },
-            { type: "input_image", image_url: { url: imageData } },
+            { type: "text", text: userPrompt },
+            { type: "image_url", image_url: { url: imageData } },
           ],
         },
       ],
     });
 
-    const text = (resp.output_text || "").trim();
+    const text = chat.choices?.[0]?.message?.content?.trim() || "";
     let parsed = {};
     try {
       parsed = JSON.parse(text);
     } catch {
-      // 保險：嘗試抓第一段大括號 JSON
       const m = text.match(/\{[\s\S]*\}/);
       if (m) parsed = JSON.parse(m[0]);
     }
 
-    // 後處理：強保欄位存在與格式正確
-    const detectedRaw = parsed?.detected_species;
-    const detected =
-      detectedRaw === "cat" || detectedRaw === "dog" || detectedRaw === "plant"
-        ? detectedRaw
-        : "unknown";
+    // 正規化
+    const validSpecies = new Set(["cat", "dog", "plant"]);
+    const detected = validSpecies.has(parsed?.detected_species)
+      ? parsed.detected_species
+      : "unknown";
 
     const payload = {
       reply:
         typeof parsed?.reply === "string" && parsed.reply.trim()
           ? parsed.reply.trim()
-          : lang === "zh"
-          ? "目前狀況資訊有限，請補充更多背景（年齡、環境、發作時間、頻率等），以獲得更精準建議。"
-          : "Info is limited. Please add more context (age, environment, timing/frequency) for better advice.",
-      // 永遠補上一句詼諧台詞（模型若漏掉，就用預設）
+          : (lang === "zh"
+              ? "目前資訊有限，請補充更多背景（年齡、環境、發作時間、頻率等），以獲得更精準建議。"
+              : "Info is limited. Please add age, environment, timing/frequency for better advice."),
+      // 一定給一個不為空的詼諧一句話
       fun:
         typeof parsed?.fun === "string" && parsed.fun.trim()
           ? parsed.fun.trim()
-          : lang === "zh"
-          ? "嗯…本喵/本葉今天有點小情緒，但先照顧好基本需求，我很快就恢復元氣！"
-          : "Hmm… not in the best mood, but take care of the basics and I’ll bounce back soon!",
+          : (lang === "zh"
+              ? "嗯…今天情緒有點小打結，但先把水、食、環境顧好，我很快就復活！"
+              : "Hmm… a little knotted today, but with water, food and comfort I’ll bounce back soon!"),
       detected_species: detected,
       confidence:
         typeof parsed?.confidence === "number"
