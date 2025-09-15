@@ -6,73 +6,83 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-/**
- * 生成「小人國」合成圖（方法 B：AI 生成）
- * 需求重點：
- * - 小人國比例 ≈ 寵物/植物高度的 1/6
- * - 臉 80% 相似使用者照片，只能更帥/更美；穿原始服裝
- * - 姿勢、表情呼應寵物心情；視線看向寵物
- * - 氣泡：漫畫風、只有寵物/植物有台詞（人沒有台詞）
- * - 圖上不要任何多餘文字或浮水印（除了寵物的對話泡泡）
- */
+// 把 dataURL 轉為 {name, data:Buffer} 給 SDK 上傳
+function dataURLtoFile(dataURL, filename = "file.png") {
+  const [meta, b64] = (dataURL || "").split(",");
+  if (!meta?.startsWith("data:image/") || !b64) return null;
+  const buf = Buffer.from(b64, "base64");
+  return { name: filename, data: buf };
+}
+
 export async function POST(req) {
   try {
-    const { basePhoto, humanPhoto, petType = "cat", petBubble = "我今天超放鬆～" } = await req.json();
+    const { sceneData, humanData, bubbleText, lang = "zh", species = "pet" } =
+      await req.json();
 
-    if (!basePhoto || !basePhoto.startsWith("data:image/")) {
-      return NextResponse.json({ error: "缺少或不合法的 basePhoto（data URL）" }, { status: 400 });
+    if (!sceneData) {
+      return NextResponse.json({ error: "Missing sceneData" }, { status: 400 });
     }
 
-    // 尺寸：直式貼近你現在版面
-    const SIZE = "1024x1280";
-
-    // 規範化寵物/植物描述
-    const PET_ZH = petType === "dog" ? "狗" : petType === "plant" ? "植物" : "貓";
-
-    // 圖像生成提示（英文較穩定，內含中文關鍵）
-    const prompt = [
-      "Create a single photorealistic image from the provided base image.",
-      "Add a miniature human (\"tiny person\") at approximately ONE-SIXTH of the pet/plant's height.",
-      "The tiny person must wear the SAME outfit as in the reference photo (do not invent new clothes).",
-      "Face likeness should be ~80% similar to the reference: recognizably the same person but slightly enhanced (more handsome/beautiful).",
-      "Pose and facial expression MUST match the pet/plant's mood, and the tiny person must LOOK AT the pet/plant.",
-      `The subject is a ${PET_ZH} in the base image.`,
-      "Add a single comic-style speech bubble near the pet/plant ONLY (the human has NO bubble).",
-      `Bubble text (Traditional Chinese): 「${petBubble}」`,
-      "Do NOT add any other text, labels, watermarks, or UI elements.",
-      "Keep lighting, color tone and perspective coherent with the base image.",
-    ].join(" ");
-
-    // 我們優先用「image edit」方式，將 basePhoto 當做底圖；
-    // 若有人像，當做參考影像一起丟入，模型會做樣貌/服裝遷移。
-    // （gpt-image-1 支援不帶 mask 的全圖編輯）
-    const images = [{ image: basePhoto }];
-
-    // 可選的人像參考
-    if (humanPhoto && humanPhoto.startsWith("data:image/")) {
-      images.push({ image: humanPhoto });
+    const sceneFile = dataURLtoFile(sceneData, "scene.png");
+    const humanFile = humanData ? dataURLtoFile(humanData, "human.png") : null;
+    if (!sceneFile) {
+      return NextResponse.json({ error: "Invalid sceneData" }, { status: 400 });
     }
 
-    const result = await openai.images.edits({
+    // Guideline（你定義的小人國規則）
+    const guideline_zh = `
+合成要求：
+- 將人像小人國化，身高約為寵物/植物高度的 1/6。
+- 臉部約 80% 相似原照，可更帥/更美，但不可走鐘、不可換人。
+- 穿原始服裝（不要奇裝異服），與場景光影一致。
+- 姿勢、表情要呼應寵物/植物當下心情（緊張→後退或半蹲安撫；慵懶→放鬆坐/蹲）。
+- 視線必須看向寵物/植物。
+- 對話泡泡只有寵物/植物一方，**人沒有台詞**。
+- 在畫面中加入漫畫風黑邊泡泡，泡泡內文字使用繁體中文，內容：${bubbleText || "我今天心情很好～"}。
+- 構圖自然不突兀；膚色、陰影、透視要合理。
+`;
+
+    const guideline_en = `
+Compose these two images:
+- Miniaturize the human to ~1/6 of the pet/plant's height.
+- Face ~80% similar to the provided human photo, allow subtle beautification only.
+- Keep the person's original clothes; match lighting to the scene.
+- Pose/expression must respond to pet/plant mood (anxious→step back/crouch; relaxed→sit/chill).
+- Person must look at the pet/plant.
+- Only the pet/plant has a speech bubble (comic style black-outline). The person has NO text bubble.
+- Add a comic-style speech bubble with the following text: ${bubbleText || "Feeling great today!"} (use Traditional Chinese if the UI is Chinese).
+- Make shadows/perspective consistent and natural.
+`;
+
+    const prompt =
+      lang === "zh"
+        ? `請將下列兩張圖合成：背景為寵物/植物場景、人像小人國化。${guideline_zh}`
+        : `Please compose the two images: scene (pet/plant) + human as miniature. ${guideline_en}`;
+
+    // 使用 edits，把 scene/human 一起送進去做合成
+    const images = [sceneFile, ...(humanFile ? [humanFile] : [])];
+    const res = await openai.images.edits({
       model: "gpt-image-1",
-      // 多張輸入：第一張視為底圖，其餘作為參考
-      image: images,
       prompt,
-      size: SIZE,
-      // 加一點鋒利度與寫實感
-      // （如果覺得太銳利可以調低）
-      // NOTE: 有些版本無此參數可忽略；保留兼容性
-      // sharpness: 0.2,
+      size: "1024x1024",
+      // 直接交給模型合成（不使用 mask）；它會根據 prompt 自行融合兩張圖
+      image: images,
+      // 為避免重口味風格，降低噪點
+      n: 1,
+      // 注意：不要加上 background removal；交給 prompt 做
     });
 
-    const b64 = result?.data?.[0]?.b64_json;
+    const b64 = res?.data?.[0]?.b64_json;
     if (!b64) {
-      return NextResponse.json({ error: "生成失敗，沒有回傳影像" }, { status: 500 });
+      return NextResponse.json(
+        { error: "Image generation failed" },
+        { status: 500 }
+      );
     }
-
-    const dataUrl = `data:image/png;base64,${b64}`;
-    return NextResponse.json({ image: dataUrl, model: "gpt-image-1" });
+    const dataURL = `data:image/png;base64,${b64}`;
+    return NextResponse.json({ image: dataURL });
   } catch (e) {
+    console.error(e);
     return NextResponse.json(
       { error: "Internal error", details: String(e?.message || e) },
       { status: 500 }
