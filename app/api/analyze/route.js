@@ -1,161 +1,89 @@
-// app/api/analyze/route.js
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
+import { createClient } from "@supabase/supabase-js";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-// 封裝一次：先試 Responses API，不行就回退到 Chat Completions（4o-vision）
-async function runVisionJSON({ sys, userPrompt, imageData }) {
-  // 1) 先試 Responses API（若 SDK 支援）
-  if (openai.responses?.create) {
-    try {
-      const r = await openai.responses.create({
-        model: "gpt-4.1-mini",
-        temperature: 0.5,
-        response_format: { type: "json_object" },
-        input: [
-          { role: "system", content: sys },
-          {
-            role: "user",
-            content: [
-              { type: "input_text", text: userPrompt },
-              { type: "input_image", image_url: { url: imageData } },
-            ],
-          },
-        ],
-      });
-      const text = (r.output_text || "").trim();
-      if (text) return text;
-      // 若拿到空字串，當作失敗→走回退
-    } catch (err) {
-      // 直接落到回退
-    }
-  }
+const SYS_PROMPT = `You are a pet communication and behavior analyst.
+Return ONLY a JSON object with keys:
+{
+  "state": string,           // 目前寵物的狀態，用繁體中文，第一句就要描述牠現在看起來怎樣
+  "issues": string[],        // 可能問題
+  "suggestions": string[],   // 建議的改善方式
+  "severity": "low" | "medium" | "high",
+  "fun_one_liner": string    // 寵物用第一人稱說的一句話，不得為空
+}
+Rules:
+- All fields required.
+- "fun_one_liner" 必須第一人稱（例：我今天好累啊）。`;
 
-  // 2) 回退：Chat Completions + 4o-mini（支援 vision）
-  const chat = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    temperature: 0.5,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: sys },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: userPrompt },
-          { type: "image_url", image_url: { url: imageData } },
-        ],
-      },
-    ],
-  });
-  return (chat?.choices?.[0]?.message?.content || "").trim();
+function estimateBase64SizeKB(dataURL) {
+  const base64 = (dataURL || "").split(",")[1] || "";
+  const bytes = Math.ceil((base64.length * 3) / 4);
+  return Math.round(bytes / 1024);
 }
 
 export async function POST(req) {
   try {
-    const body = await req.json();
-    const { species, userText = "", imageData, lang = "zh" } = body || {};
-    if (!imageData) {
-      return NextResponse.json({ error: "Missing imageData" }, { status: 400 });
+    const { species = "cat", userText = "", imageData, lang = "zh" } = await req.json();
+
+    if (!imageData || !imageData.startsWith("data:image/")) {
+      return NextResponse.json({ error: "Invalid imageData" }, { status: 400 });
     }
 
-    const sys =
-      lang === "zh"
-        ? `你是《寵物植物溝通 App》的圖片分析助理，請用繁體中文、清楚、負責任地回覆。
-- 不得做醫療診斷；若風險高，提醒就醫/找專業人士。
-- 你必須只輸出「單一 JSON 物件」，且 *四個欄位不可缺漏*：
-  - state: string（用 1–2 句描述「目前狀態/你觀察到的情形」；務必直白、具體）
-  - severity: "low" | "medium" | "high"（整體風險）
-  - reply: string（3–5 點具體建議，步驟化，換行或條列）
-  - fun: string（詼諧的一句話，必須用第一人稱，好像寵物/植物自己在講話）
-另外請同時輸出（若能偵測）：detected_species: "cat"|"dog"|"plant"|"unknown" 與 confidence: number(0..1)。
-只輸出 JSON，不要附加任何其他文字。`
-        : `You are the image-analysis assistant for a Pets & Plants app.
-- No medical diagnosis; advise professional help if risk is high.
-- Return ONLY a SINGLE JSON object with these REQUIRED keys:
-  - state: string (1–2 sentences describing the current observed condition)
-  - severity: "low" | "medium" | "high"
-  - reply: string (3–5 actionable bullets/steps)
-  - fun: string (a witty one-liner in FIRST PERSON, as if the pet/plant is speaking)
-Optionally also include detected_species ("cat"|"dog"|"plant"|"unknown") and confidence (0..1).`;
+    const sizeKB = estimateBase64SizeKB(imageData);
+    if (sizeKB > 700) {
+      return NextResponse.json(
+        { error: `Image too large (${sizeKB}KB). 請壓縮（建議最長邊 720、品質 0.7）。` },
+        { status: 413 }
+      );
+    }
 
-    const userPrompt =
-      lang === "zh"
-        ? `使用者目前選擇的物種: ${species || "(未提供)"}。
-補充描述: ${userText || "(無)"}。
-請先理解照片內容，再依上面的要求產出唯一 JSON。`
-        : `User-selected species: ${species || "(n/a)"}.
-User notes: ${userText || "(none)"}.
-Analyze the photo and return the SINGLE JSON described above.`;
+    const messages = [
+      { role: "system", content: SYS_PROMPT },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: `物種：${species}；補充：${userText || "（無）"}` },
+          { type: "image_url", image_url: { url: imageData } }
+        ],
+      },
+    ];
 
-    // —— 呼叫（含回退）——
-    const raw = await runVisionJSON({ sys, userPrompt, imageData });
+    const chat = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages,
+      temperature: 0.3,
+      response_format: { type: "json_object" }
+    });
 
-    // 解析 JSON（帶保險）
+    const raw = chat?.choices?.[0]?.message?.content?.trim() || "{}";
     let parsed = {};
-    try {
-      parsed = JSON.parse(raw || "{}");
-    } catch {
-      const m = (raw || "").match(/\{[\s\S]*\}/);
-      if (m) {
-        try { parsed = JSON.parse(m[0]); } catch {}
-      }
-    }
-
-    // —— 正規化與保底 —— //
-    const detectedRaw = parsed?.detected_species;
-    const detected =
-      detectedRaw === "cat" || detectedRaw === "dog" || detectedRaw === "plant"
-        ? detectedRaw
-        : "unknown";
-
-    const normSeverity = (v) =>
-      v === "low" || v === "medium" || v === "high" ? v : "low";
-
-    const pickFirstSentence = (s = "") =>
-      String(s)
-        .split(/\n|。|！|!|？|\?/)
-        .map((t) => t.trim())
-        .filter(Boolean)[0] || "";
-
-    const stateText =
-      (typeof parsed?.state === "string" && parsed.state.trim()) ||
-      pickFirstSentence(parsed?.reply) ||
-      (lang === "zh"
-        ? "目前狀態未明確，建議補充更多背景（時間、頻率、環境）。"
-        : "Current state unclear; please add timing/frequency/environment.");
-
-    const funText =
-      (typeof parsed?.fun === "string" && parsed.fun.trim()) ||
-      (lang === "zh"
-        ? "我今天有點小小情緒，但把基本需求顧好，我很快就恢復元氣！"
-        : "I’m a bit moody today, but take care of the basics and I’ll bounce back soon!");
+    try { parsed = JSON.parse(raw); } catch { parsed = {}; }
 
     const payload = {
-      state: stateText,
-      severity: normSeverity(parsed?.severity),
-      reply:
-        typeof parsed?.reply === "string" && parsed.reply.trim()
-          ? parsed.reply.trim()
-          : lang === "zh"
-          ? "資訊有限，請補充年齡、環境、時間與頻率等背景，以獲得更精準建議。"
-          : "Info is limited. Please add age, environment, timing/frequency.",
-      fun: funText,
-      detected_species: detected,
-      confidence:
-        typeof parsed?.confidence === "number"
-          ? Math.max(0, Math.min(1, parsed.confidence))
-          : 0,
+      state: parsed.state || "我現在的狀態不太明顯，但我還在努力喔！",
+      issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+      suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions : [],
+      severity: parsed.severity || "low",
+      fun_one_liner: parsed.fun_one_liner?.trim()
+        ? parsed.fun_one_liner
+        : "今天的我，也要最可愛 ✨",
     };
+
+    await supabase.from("image_analyses").insert({
+      species,
+      user_text: userText,
+      image_data: imageData,
+      reply: JSON.stringify(payload),
+    });
 
     return NextResponse.json(payload);
   } catch (e) {
-    console.error(e);
-    return NextResponse.json(
-      { error: "Internal error", details: String(e?.message || e) },
-      { status: 500 }
-    );
+    console.error("Analyze error:", e);
+    return NextResponse.json({ error: "Internal error", details: String(e?.message || e) }, { status: 500 });
   }
 }
