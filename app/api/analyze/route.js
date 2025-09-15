@@ -4,9 +4,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-// 這支 API：分析「寵物/植物照片」，回覆專業建議 + 必有的詼諧一句話(fun)。
-// 另外回傳 detected_species 與 confidence 以便自動偵測物種。
-
+// MVP：不做任何每日次數限制
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req) {
@@ -47,7 +45,7 @@ export async function POST(req) {
 User notes: ${userText || "(none)"}.
 Analyze the photo and return the SINGLE JSON described above.`;
 
-    // ✅ 用 Responses API：文字 + 圖片（注意 image_url 需為物件 { url }）
+    // 用 Responses API：文字 + 圖片（注意 image_url 需為物件 { url }）
     const resp = await openai.responses.create({
       model: "gpt-4.1-mini",
       temperature: 0.5,
@@ -69,7 +67,7 @@ Analyze the photo and return the SINGLE JSON described above.`;
     try {
       parsed = JSON.parse(text);
     } catch {
-      // 保險：嘗試抓最後一個大括號 JSON
+      // 保險：嘗試抓第一段大括號 JSON
       const m = text.match(/\{[\s\S]*\}/);
       if (m) parsed = JSON.parse(m[0]);
     }
@@ -82,17 +80,19 @@ Analyze the photo and return the SINGLE JSON described above.`;
         : "unknown";
 
     const payload = {
-      reply: typeof parsed?.reply === "string" && parsed.reply.trim()
-        ? parsed.reply.trim()
-        : (lang === "zh"
-            ? "目前狀況資訊有限，請補充更多背景（年齡、環境、發作時間、頻率等），以獲得更精準建議。"
-            : "Info is limited. Please add more context (age, environment, timing/frequency) for better advice."),
-      // 永遠補上一句詼諧台詞
-      fun: typeof parsed?.fun === "string" && parsed.fun.trim()
-        ? parsed.fun.trim()
-        : (lang === "zh"
-            ? "嗯…本喵/本葉今天有點小情緒，但先照顧好基本需求，我很快就恢復元氣！"
-            : "Hmm… not in the best mood, but take care of the basics and I’ll bounce back soon!"),
+      reply:
+        typeof parsed?.reply === "string" && parsed.reply.trim()
+          ? parsed.reply.trim()
+          : lang === "zh"
+          ? "目前狀況資訊有限，請補充更多背景（年齡、環境、發作時間、頻率等），以獲得更精準建議。"
+          : "Info is limited. Please add more context (age, environment, timing/frequency) for better advice.",
+      // 永遠補上一句詼諧台詞（模型若漏掉，就用預設）
+      fun:
+        typeof parsed?.fun === "string" && parsed.fun.trim()
+          ? parsed.fun.trim()
+          : lang === "zh"
+          ? "嗯…本喵/本葉今天有點小情緒，但先照顧好基本需求，我很快就恢復元氣！"
+          : "Hmm… not in the best mood, but take care of the basics and I’ll bounce back soon!",
       detected_species: detected,
       confidence:
         typeof parsed?.confidence === "number"
