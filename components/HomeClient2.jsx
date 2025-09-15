@@ -1,9 +1,8 @@
-// components/HomeClient2.jsx
 'use client';
 import { useState, useRef } from 'react';
 import AudioConsult from './AudioConsult';
 
-// ---------- 前端壓縮（省費用） ----------
+// --- 前端壓縮圖片（省費用） ---
 async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
   const img = document.createElement('img');
   const reader = new FileReader();
@@ -22,38 +21,32 @@ async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
   return canvas.toDataURL('image/jpeg', quality);
 }
 
-// ---------- 小工具：把台詞盡量轉第一人稱 ----------
-function ensureFirstPerson(t = '') {
-  let s = String(t).trim();
-  if (!s) return '';
-  // 簡單規則：若不是以「我/本喵/本狗/本葉」開頭，補個「我」或「我覺得」
-  if (!/^我/.test(s) && !/^(本喵|本狗|本鳥|本葉|本盆栽)/.test(s)) {
-    s = (s.length <= 20 ? `我${s}` : `我覺得，${s}`);
-  }
-  // 避免結尾沒標點
-  if (!/[。.!！?？]$/.test(s)) s += '。';
-  return s.slice(0, 90); // 防太長
-}
-
-// ---------- 內心劇場（Canvas 合成｜不存人像｜右上不顯字樣） ----------
-async function generateTheaterImage({ basePhoto, style, petThought = '我今天也要好好表現！', humanPhoto }) {
+// --- 內心劇場（前端 Canvas 合成，不存人像；移除右上角標籤） ---
+async function generateTheaterImage({ basePhoto, petThought = '我今天要當最可愛的自己！', humanPhoto }) {
   const W = 1080, H = 1350;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   canvas.width = W; canvas.height = H;
 
   // 背景
-  ctx.fillStyle = '#0c1116'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#0c1116';
+  ctx.fillRect(0, 0, W, H);
 
+  // 主圖鋪滿
   const img = await loadImg(basePhoto);
   const fit = coverRect(img.width, img.height, W, H);
   ctx.drawImage(img, fit.sx, fit.sy, fit.sw, fit.sh, 0, 0, W, H);
 
-  // 柔邊框
-  ctx.strokeStyle = '#ffffff20'; ctx.lineWidth = 24; ctx.strokeRect(12, 12, W - 24, H - 24);
+  // 外框
+  ctx.strokeStyle = '#ffffff20';
+  ctx.lineWidth = 24;
+  ctx.strokeRect(12, 12, W - 24, H - 24);
 
-  // 人像（小人國）
-  if (style === 'realistic_bubble_human' && humanPhoto) {
+  // 氣泡（寵物/植物第一人稱）
+  drawSpeechBubble(ctx, { x: W - 60, y: H - 280, text: petThought, align: 'right' });
+
+  // 若有本人照片 → 左下角圓形頭像 + 對話
+  if (humanPhoto) {
     const human = await loadImg(humanPhoto);
     const R = 140, cx = 140, cy = H - 160;
     ctx.save();
@@ -61,18 +54,14 @@ async function generateTheaterImage({ basePhoto, style, petThought = '我今天�
     const hf = coverRect(human.width, human.height, R * 2, R * 2);
     ctx.drawImage(human, hf.sx, hf.sy, hf.sw, hf.sh, cx - R, cy - R, R * 2, R * 2);
     ctx.restore();
-    ctx.strokeStyle = '#ffffffcc'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
-
-    drawSpeechBubble(ctx, { x: 280, y: H - 300, text: ensureFirstPerson('你在想什麼呢？'), align: 'left' });
+    ctx.strokeStyle = '#ffffffcc'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+    drawSpeechBubble(ctx, { x: 280, y: H - 300, text: '你在想什麼呢？', align: 'left' });
   }
-
-  // 寵物/植物泡泡
-  drawSpeechBubble(ctx, { x: W - 60, y: H - 280, text: ensureFirstPerson(petThought), align: 'right' });
-
-  // 不畫任何右上角標籤
 
   return canvas.toDataURL('image/png');
 
+  // helpers
   function coverRect(sw, sh, dw, dh) {
     const sRatio = sw / sh, dRatio = dw / dh;
     let sx, sy, sw2, sh2;
@@ -88,10 +77,10 @@ async function generateTheaterImage({ basePhoto, style, petThought = '我今天�
   function drawSpeechBubble(context, { x, y, text, align = 'right' }) {
     const maxWidth = 540;
     context.font = '500 40px system-ui, -apple-system, Segoe UI, Roboto';
-    const lines = wrap(text, maxWidth, context);
-    const lh = 52, pad = 24;
-    const w = Math.min(maxWidth, Math.max(...lines.map(l => context.measureText(l).width))) + pad * 2;
-    const h = lines.length * lh + pad * 2;
+    const lines = wrapText(context, String(text || ''), maxWidth);
+    const lh = 52, padding = 24;
+    const w = Math.min(maxWidth, Math.max(...lines.map(l => context.measureText(l).width))) + padding * 2;
+    const h = lines.length * lh + padding * 2;
     const bx = align === 'right' ? x - w : x;
     const by = y - h;
 
@@ -100,41 +89,37 @@ async function generateTheaterImage({ basePhoto, style, petThought = '我今天�
     roundRect(context, bx, by, w, h, 18); context.fill(); context.stroke();
 
     context.beginPath();
-    if (align === 'right') {
-      context.moveTo(x, y); context.lineTo(bx + w - 40, by + h); context.lineTo(bx + w - 5, by + h - 40);
-    } else {
-      context.moveTo(x, y); context.lineTo(bx + 40, by + h); context.lineTo(bx + 5, by + h - 40);
-    }
+    if (align === 'right') { context.moveTo(x, y); context.lineTo(bx + w - 40, by + h); context.lineTo(bx + w - 5, by + h - 40); }
+    else { context.moveTo(x, y); context.lineTo(bx + 40, by + h); context.lineTo(bx + 5, by + h - 40); }
     context.closePath(); context.fill(); context.stroke();
 
     context.fillStyle = '#111';
-    lines.forEach((l, i) => context.fillText(l, bx + pad, by + pad + (i + 0.9) * lh - 12));
-
-    function wrap(t, maxW, c) {
-      const words = (t || '').split(/\s|(?=[，。！？、])/);
-      const out = []; let line = '';
-      for (const w of words) {
-        const test = line ? line + (/\w$/.test(line) ? ' ' : '') + w : w;
-        if (c.measureText(test).width > maxW) { if (line) out.push(line); line = w; }
-        else line = test;
-      }
-      if (line) out.push(line);
-      return out;
+    lines.forEach((l, i) => context.fillText(l, bx + padding, by + padding + (i + 0.9) * lh - 12));
+  }
+  function wrapText(c, t, maxW) {
+    const words = (t || '').split(/\s|(?=[，。！？、])/);
+    const out = []; let line = '';
+    for (const w of words) {
+      const test = line ? line + (/\w$/.test(line) ? ' ' : '') + w : w;
+      if (c.measureText(test).width > maxW) { if (line) out.push(line); line = w; }
+      else line = test;
     }
-    function roundRect(c, x0, y0, w0, h0, r) {
-      c.beginPath();
-      c.moveTo(x0 + r, y0);
-      c.arcTo(x0 + w0, y0, x0 + w0, y0 + h0, r);
-      c.arcTo(x0 + w0, y0 + h0, x0, y0 + h0, r);
-      c.arcTo(x0, y0 + h0, x0, y0, r);
-      c.arcTo(x0, y0, x0 + w0, y0, r);
-      c.closePath();
-    }
+    if (line) out.push(line);
+    return out;
+  }
+  function roundRect(c, x0, y0, w0, h0, r) {
+    c.beginPath();
+    c.moveTo(x0 + r, y0);
+    c.arcTo(x0 + w0, y0, x0 + w0, y0 + h0, r);
+    c.arcTo(x0 + w0, y0 + h0, x0, y0 + h0, r);
+    c.arcTo(x0, y0 + h0, x0, y0, r);
+    c.arcTo(x0, y0, x0 + w0, y0, r);
+    c.closePath();
   }
 }
 
 export default function HomeClient2() {
-  // 物種 & 文字
+  // 共用狀態
   const [species, setSpecies] = useState('cat');
   const [userText, setUserText] = useState('');
   const [reply, setReply] = useState('');
@@ -142,28 +127,24 @@ export default function HomeClient2() {
   const [loading, setLoading] = useState(false);
 
   // 圖片
-  const [imgReply, setImgReply] = useState('');
-  const [imgState, setImgState] = useState('');
-  const [imgSeverity, setImgSeverity] = useState('');
-  const [imgLoading, setImgLoading] = useState(false);
+  const [imgReply, setImgReply] = useState(''); // 動物：用不到時可留空
   const [preview, setPreview] = useState('');
   const fileRef = useRef(null);
-
-  // 植物結果（保留現有欄位）
-  const [plantResult, setPlantResult] = useState(null);
-  const [plantLoading, setPlantLoading] = useState(false);
-
-  // 本人照
   const [humanPreview, setHumanPreview] = useState('');
   const humanRef = useRef(null);
 
-  // 內心劇場
+  // 植物 / 動物結果
+  const [plantResult, setPlantResult] = useState(null); // {state, likely_issues, care_steps, fun_one_liner, ...}
+  const [petResult, setPetResult] = useState(null);     // {state, issues, suggestions, fun_one_liner, ...}
+  const [imgLoading, setImgLoading] = useState(false);
+
+  // 內心劇場圖
   const [theaterUrl, setTheaterUrl] = useState('');
 
-  // 語音 → 台詞來源
+  // 語音分析（可選，僅提示）
   const [audioAdvice, setAudioAdvice] = useState('');
 
-  // 文字諮詢
+  // --- 文字諮詢（與圖片無關，保持原樣） ---
   async function handleTextSubmit(e) {
     e.preventDefault();
     setLoading(true); setReply(''); setFun('');
@@ -182,7 +163,7 @@ export default function HomeClient2() {
     }
   }
 
-  // 檔案選擇
+  // --- 選檔 ---
   function onFileChange(e) {
     const f = e.target.files?.[0];
     if (!f) return setPreview('');
@@ -198,97 +179,61 @@ export default function HomeClient2() {
     reader.readAsDataURL(f);
   }
 
-  // 自動生成內心劇場
-  async function autoMakeTheater({ from = 'animal', data, preview, humanPreview, fun }) {
-    try {
-      if (!preview) return;
-      const thought =
-        (data?.creative && String(data.creative)) ||
-        (data?.state && String(data.state)) ||
-        (fun && String(fun)) ||
-        (from === 'plant' && Array.isArray(data?.care_steps) && data.care_steps[0]) ||
-        (typeof data?.reply === 'string' && data.reply.split(/[\n。]/).filter(Boolean)[0]) ||
-        '我今天要做最可愛的自己！';
-
-      const style = humanPreview ? 'realistic_bubble_human' : 'realistic_bubble';
-
-      const url = await generateTheaterImage({
-        basePhoto: preview,
-        style,
-        petThought: thought,
-        humanPhoto: humanPreview || undefined,
-      });
-      setTheaterUrl(url);
-    } catch (e) {
-      console.error('autoMakeTheater failed:', e);
-    }
-  }
-
-  // 照片諮詢（植物→辨識；動物→一般分析）
+  // --- 照片諮詢（植物→/api/plant/identify；動物→/api/analyze），成功後自動產生小劇場 ---
   async function handlePhotoConsult() {
     const file = fileRef.current?.files?.[0];
     if (!file) return alert('請先選擇諮詢照片');
-
-    setImgLoading(true); setPlantLoading(true);
-    setImgReply(''); setPlantResult(null); setTheaterUrl(''); setImgState(''); setImgSeverity('');
+    setImgLoading(true); setPlantResult(null); setPetResult(null); setTheaterUrl('');
 
     try {
       const dataURL = await compressImageToDataURL(file, 720, 0.7);
 
-      async function sendBy(speciesToUse) {
-        if (speciesToUse === 'plant') {
-          const res = await fetch('/api/plant/identify', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ imageData: dataURL, userText })
-          });
-          return res.json();
-        } else {
-          const res = await fetch('/api/analyze', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ species: speciesToUse, userText, imageData: dataURL, lang: 'zh' })
-          });
-          return res.json();
-        }
-      }
-
-      let data = await sendBy(species);
-
-      // 物種自動修正（若後端有偵測且明顯不一致）
-      const detected = data?.detected_species;
-      const conf = typeof data?.confidence === 'number' ? data.confidence : 0;
-      const mismatch = detected && detected !== 'unknown' && detected !== species && conf >= 0.7;
-      if (mismatch) {
-        const zh = detected === 'cat' ? '貓' : detected === 'dog' ? '狗' : '植物';
-        const ok = confirm(`看起來像是：${zh}（信心 ${(conf * 100).toFixed(0)}%）。要切換成「${zh}」並重新分析嗎？`);
-        if (ok) { setSpecies(detected); data = await sendBy(detected); }
-      }
-
-      // 顯示 & 內心劇場
-      if (species === 'plant' || (mismatch && detected === 'plant')) {
+      if (species === 'plant') {
+        const res = await fetch('/api/plant/identify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageData: dataURL, userText })
+        });
+        const data = await res.json();
         if (data.error) {
           setPlantResult({ error: data.error, details: data.details });
         } else {
-          const result = data.result || { reply: data.reply, fun_one_liner: data.fun, state: data.state, severity: data.severity };
+          const result = data; // 後端已回 payload
           setPlantResult(result);
-          setImgState(result.state || '');
-          setImgSeverity(result.severity || '');
-          await autoMakeTheater({ from: 'plant', data: result, preview, humanPreview, fun: result?.fun_one_liner });
+          const bubble = result.fun_one_liner || '我想要剛剛好的陽光和一點水分 🌱';
+          const url = await generateTheaterImage({
+            basePhoto: preview || dataURL,
+            petThought: bubble,
+            humanPhoto: humanPreview || undefined,
+          });
+          setTheaterUrl(url);
         }
       } else {
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ species, userText, imageData: dataURL, lang: 'zh' })
+        });
+        const data = await res.json();
         if (data.error) {
           setImgReply(`❌ 錯誤：${data.error}${data.details ? '｜' + data.details : ''}`);
         } else {
-          setImgReply(data.reply || '（沒有回覆）');
-          setImgState(data.state || '');
-          setImgSeverity(data.severity || '');
-          await autoMakeTheater({ from: 'animal', data, preview, humanPreview, fun: data.fun });
+          setPetResult(data);
+          const bubble = data.fun_one_liner || '我今天心情不錯，想多睡一會兒～';
+          const url = await generateTheaterImage({
+            basePhoto: preview || dataURL,
+            petThought: bubble,
+            humanPhoto: humanPreview || undefined,
+          });
+          setTheaterUrl(url);
         }
       }
-    } catch {
+    } catch (e) {
+      console.error(e);
       if (species === 'plant') setPlantResult({ error: 'Internal error' });
       else setImgReply('⚠️ 發生錯誤，請稍候再試');
     } finally {
-      setImgLoading(false); setPlantLoading(false);
+      setImgLoading(false);
     }
   }
 
@@ -296,7 +241,7 @@ export default function HomeClient2() {
     <main style={{ maxWidth: 720, margin: '40px auto', fontFamily: 'sans-serif', padding: '0 16px' }}>
       <h1>寵物溝通 app</h1>
 
-      {/* 物種選擇 */}
+      {/* 選擇物種 */}
       <section style={{ marginTop: 12 }}>
         <h3 style={{ margin: '8px 0' }}>選擇物種：</h3>
         <select value={species} onChange={(e) => setSpecies(e.target.value)} style={{ padding: 8 }}>
@@ -309,13 +254,19 @@ export default function HomeClient2() {
       {/* 文字諮詢 */}
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
         <h3 style={{ marginTop: 0 }}>文字諮詢：</h3>
-        <textarea rows={3} style={{ width: '100%', padding: 10 }} placeholder='輸入你的問題…'
-          value={userText} onChange={(e) => setUserText(e.target.value)} />
+        <textarea
+          rows={3}
+          style={{ width: '100%', padding: 10 }}
+          placeholder='輸入你的問題…'
+          value={userText}
+          onChange={(e) => setUserText(e.target.value)}
+        />
         <div style={{ marginTop: 10 }}>
           <button onClick={handleTextSubmit} disabled={loading} style={{ padding: '10px 16px' }}>
             {loading ? '處理中…' : '送出問題'}
           </button>
         </div>
+
         {reply && (
           <div style={{ marginTop: 12, whiteSpace: 'pre-line' }}>
             <strong>AI 回覆：</strong>
@@ -336,12 +287,24 @@ export default function HomeClient2() {
               <button type='button' onClick={() => fileRef.current?.click()} style={{ padding: '10px 16px' }}>
                 選擇諮詢照片
               </button>
-              <input ref={fileRef} type='file' accept='image/*' onChange={onFileChange} style={{ display: 'none' }} />
+              <input
+                ref={fileRef}
+                type='file'
+                accept='image/*'
+                onChange={onFileChange}
+                style={{ display: 'none' }}
+              />
 
               <button type='button' onClick={() => humanRef.current?.click()} style={{ padding: '10px 16px' }}>
                 選擇本人照片（可選）
               </button>
-              <input ref={humanRef} type='file' accept='image/*' onChange={onHumanChange} style={{ display: 'none' }} />
+              <input
+                ref={humanRef}
+                type='file'
+                accept='image/*'
+                onChange={onHumanChange}
+                style={{ display: 'none' }}
+              />
             </div>
 
             <p style={{ marginTop: 8, fontSize: 13, color: '#666' }}>
@@ -362,37 +325,63 @@ export default function HomeClient2() {
             )}
 
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-              <button onClick={handlePhotoConsult} disabled={imgLoading || plantLoading} style={{ padding: '10px 16px' }}>
-                {(imgLoading || plantLoading) ? '處理中…' : '送出照片諮詢'}
+              <button onClick={handlePhotoConsult} disabled={imgLoading} style={{ padding: '10px 16px' }}>
+                {imgLoading ? '處理中…' : '送出照片諮詢'}
               </button>
             </div>
 
-            {/* 結果：狀態/嚴重度 + 建議 */}
-            {(imgReply || imgState) && (
-              <div style={{ marginTop: 12, whiteSpace: 'pre-line' }}>
-                <strong>AI 圖片回覆：</strong>
-                {imgState && (
-                  <p style={{ margin: '6px 0', padding: '8px 10px', background:'#f8fafc', border:'1px solid #e5e7eb', borderRadius:8 }}>
-                    <span style={{ fontWeight: 600 }}>目前狀態：</span>{imgState}
-                    {imgSeverity && (
-                      <span style={{ marginLeft: 8, fontSize: 12, color: '#64748b' }}>
-                        （嚴重度：{imgSeverity === 'high' ? '高' : imgSeverity === 'medium' ? '中' : '低'}）
-                      </span>
-                    )}
-                  </p>
+            {/* 文字結果（第三人稱） */}
+            {petResult && (
+              <div style={{ marginTop: 16 }}>
+                <strong>🐾 目前狀態</strong>
+                <p style={{ whiteSpace: 'pre-line' }}>{petResult.state}</p>
+                {Array.isArray(petResult.issues) && petResult.issues.length > 0 && (
+                  <>
+                    <strong>可能問題</strong>
+                    <ul>{petResult.issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                  </>
                 )}
-                {imgReply && <p>{imgReply}</p>}
+                {Array.isArray(petResult.suggestions) && petResult.suggestions.length > 0 && (
+                  <>
+                    <strong>建議步驟</strong>
+                    <ol>{petResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ol>
+                  </>
+                )}
               </div>
             )}
 
-            {/* 內心劇場：自動產生後直接顯示在此 */}
+            {plantResult && !plantResult.error && (
+              <div style={{ marginTop: 16 }}>
+                <strong>🌿 植物辨識</strong>
+                <ul>
+                  <li>名稱：{plantResult.common_name || '未知'}（{plantResult.scientific_name || '-'}）</li>
+                  <li>信心：{typeof plantResult.confidence === 'number' ? (plantResult.confidence*100).toFixed(0) + '%' : '-'}</li>
+                </ul>
+                <strong>目前狀態</strong>
+                <p style={{ whiteSpace: 'pre-line' }}>{plantResult.state}</p>
+                {Array.isArray(plantResult.likely_issues) && plantResult.likely_issues.length > 0 && (
+                  <>
+                    <strong>可能問題</strong>
+                    <ul>{plantResult.likely_issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                  </>
+                )}
+                {Array.isArray(plantResult.care_steps) && plantResult.care_steps.length > 0 && (
+                  <>
+                    <strong>照護步驟</strong>
+                    <ol>{plantResult.care_steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* 內心小劇場：自動產生後直接顯示 */}
             {theaterUrl && (
               <div style={{ marginTop: 16 }}>
-                <h4 style={{ margin: '6px 0' }}>🎭 內心劇場</h4>
-                <img src={theaterUrl} alt="內心劇場" style={{ width: '100%', borderRadius: 8, border: '1px solid #ddd' }} />
+                <strong>🎭 內心小劇場</strong>
+                <img src={theaterUrl} alt="內心劇場" style={{ width: '100%', borderRadius: 8, border: '1px solid #ddd', marginTop: 8 }} />
                 <div style={{ marginTop: 8 }}>
                   <a href={theaterUrl} download='theater.png' style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6 }}>
-                    下載這張圖
+                    下載圖片
                   </a>
                 </div>
               </div>
@@ -413,13 +402,13 @@ export default function HomeClient2() {
         </div>
       </section>
 
-      {/* 聲音諮詢（結果也會餵進內心劇場台詞） */}
+      {/* 聲音諮詢（結果也可用於理解情境，但不影響泡泡第一人稱來源） */}
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
         <h3 style={{ marginTop: 0 }}>聲音諮詢：</h3>
         <AudioConsult species={species} onAdvice={setAudioAdvice} onSpeciesChange={setSpecies} />
         {audioAdvice && (
           <div style={{ marginTop: 8, fontSize: 12, color: '#2563eb' }}>
-            ✅ 已擷取語音分析結果，將用於內心劇場台詞。
+            ✅ 已擷取語音分析摘要（僅作輔助，圖片泡泡仍以第一人稱 fun_one_liner 為準）
           </div>
         )}
       </section>
