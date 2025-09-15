@@ -6,6 +6,53 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// 封裝一次：先試 Responses API，不行就回退到 Chat Completions（4o-vision）
+async function runVisionJSON({ sys, userPrompt, imageData }) {
+  // 1) 先試 Responses API（若 SDK 支援）
+  if (openai.responses?.create) {
+    try {
+      const r = await openai.responses.create({
+        model: "gpt-4.1-mini",
+        temperature: 0.5,
+        response_format: { type: "json_object" },
+        input: [
+          { role: "system", content: sys },
+          {
+            role: "user",
+            content: [
+              { type: "input_text", text: userPrompt },
+              { type: "input_image", image_url: { url: imageData } },
+            ],
+          },
+        ],
+      });
+      const text = (r.output_text || "").trim();
+      if (text) return text;
+      // 若拿到空字串，當作失敗→走回退
+    } catch (err) {
+      // 直接落到回退
+    }
+  }
+
+  // 2) 回退：Chat Completions + 4o-mini（支援 vision）
+  const chat = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0.5,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: sys },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: userPrompt },
+          { type: "image_url", image_url: { url: imageData } },
+        ],
+      },
+    ],
+  });
+  return (chat?.choices?.[0]?.message?.content || "").trim();
+}
+
 export async function POST(req) {
   try {
     const body = await req.json();
@@ -43,35 +90,21 @@ Optionally also include detected_species ("cat"|"dog"|"plant"|"unknown") and con
 User notes: ${userText || "(none)"}.
 Analyze the photo and return the SINGLE JSON described above.`;
 
-    // Responses API：文字 + 圖片（image_url 需為物件 { url }）
-    const resp = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      temperature: 0.5,
-      response_format: { type: "json_object" },
-      input: [
-        { role: "system", content: sys },
-        {
-          role: "user",
-          content: [
-            { type: "input_text", text: userPrompt },
-            { type: "input_image", image_url: { url: imageData } },
-          ],
-        },
-      ],
-    });
+    // —— 呼叫（含回退）——
+    const raw = await runVisionJSON({ sys, userPrompt, imageData });
 
-    const text = (resp.output_text || "").trim();
+    // 解析 JSON（帶保險）
     let parsed = {};
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(raw || "{}");
     } catch {
-      const m = text.match(/\{[\s\S]*\}/);
+      const m = (raw || "").match(/\{[\s\S]*\}/);
       if (m) {
         try { parsed = JSON.parse(m[0]); } catch {}
       }
     }
 
-    // ---- 正規化 & 保底 ----
+    // —— 正規化與保底 —— //
     const detectedRaw = parsed?.detected_species;
     const detected =
       detectedRaw === "cat" || detectedRaw === "dog" || detectedRaw === "plant"
