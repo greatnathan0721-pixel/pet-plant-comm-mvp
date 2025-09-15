@@ -1,6 +1,6 @@
 'use client';
 import { useState, useRef, useMemo } from 'react';
-import AudioConsult from './AudioConsult'; // ✅ 用剛剛完成的語音元件
+import AudioConsult from './AudioConsult';
 
 // --- 前端壓縮圖片（省費用） ---
 async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
@@ -152,6 +152,36 @@ export default function HomeClient2() {
   // 語音分析 → 內心劇場台詞來源
   const [audioAdvice, setAudioAdvice] = useState('');
 
+  // ✅ 新增：分析成功後自動產生小劇場圖
+  async function autoMakeTheater({ from = 'animal', data, preview, humanPreview, fun }) {
+    try {
+      if (!preview) return;
+      const thought =
+        (data?.creative && String(data.creative).slice(0, 80)) ||
+        (fun && String(fun).slice(0, 80)) ||
+        (from === 'plant' && Array.isArray(data?.care_steps) && data.care_steps[0]) ||
+        (typeof data?.reply === 'string' && data.reply.split(/[\n。]/).filter(Boolean)[0]) ||
+        '今天要做最可愛的自己！';
+
+      const style = humanPreview ? 'realistic_bubble_human' : 'realistic_bubble';
+
+      const url = await generateTheaterImage({
+        basePhoto: preview,
+        style,
+        petThought: thought,
+        humanPhoto: humanPreview || undefined,
+      });
+      setTheaterUrl(url);
+
+      // 想自動下載再打開下面三行
+      // const a = document.createElement('a');
+      // a.href = url; a.download = 'theater.png';
+      // a.click();
+    } catch (e) {
+      console.error('autoMakeTheater failed:', e);
+    }
+  }
+
   // --- 文字諮詢 ---
   async function handleTextSubmit(e) {
     e.preventDefault();
@@ -188,81 +218,95 @@ export default function HomeClient2() {
   }
 
   // --- 照片諮詢（自動分流：植物→辨識；動物→一般圖片分析） ---
- async function handlePhotoConsult() {
-  const file = fileRef.current?.files?.[0];
-  if (!file) return alert('請先選擇諮詢照片');
+  async function handlePhotoConsult() {
+    const file = fileRef.current?.files?.[0];
+    if (!file) return alert('請先選擇諮詢照片');
 
-  setImgLoading(true); setPlantLoading(true);
-  setImgReply(''); setPlantResult(null); setTheaterUrl('');
+    setImgLoading(true); setPlantLoading(true);
+    setImgReply(''); setPlantResult(null); setTheaterUrl('');
 
-  try {
-    const dataURL = await compressImageToDataURL(file, 720, 0.7);
+    try {
+      const dataURL = await compressImageToDataURL(file, 720, 0.7);
 
-    // 1) 先照「目前選擇的 species」送一次
-    async function sendBy(speciesToUse) {
-      if (speciesToUse === 'plant') {
-        const res = await fetch('/api/plant/identify', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ imageData: dataURL, userText })
-        });
-        return res.json();
+      // 1) 依目前選擇的 species 送一次
+      async function sendBy(speciesToUse) {
+        if (speciesToUse === 'plant') {
+          const res = await fetch('/api/plant/identify', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ imageData: dataURL, userText })
+          });
+          return res.json();
+        } else {
+          const res = await fetch('/api/analyze', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ species: speciesToUse, userText, imageData: dataURL, lang: 'zh' })
+          });
+          return res.json();
+        }
+      }
+
+      let data = await sendBy(species);
+
+      // 2) 若模型偵測與目前 species 不一致且信心高 → 提示切換並重送
+      const detected = data?.detected_species;
+      const conf = typeof data?.confidence === 'number' ? data.confidence : 0;
+      const mismatch =
+        detected && detected !== 'unknown' && detected !== species && conf >= 0.7;
+
+      if (mismatch) {
+        const zh =
+          detected === 'cat' ? '貓' :
+          detected === 'dog' ? '狗' :
+          detected === 'plant' ? '植物' : '未知';
+        const ok = confirm(`看起來像是：${zh}（信心 ${(conf * 100).toFixed(0)}%）。要切換成「${zh}」並用正確方式重新分析嗎？`);
+        if (ok) {
+          setSpecies(detected);
+          data = await sendBy(detected);
+        }
+      }
+
+      // 3) 顯示結果 & ✅ 自動產生小劇場
+      if (species === 'plant' || (mismatch && detected === 'plant')) {
+        if (data.error) {
+          setPlantResult({ error: data.error, details: data.details });
+        } else {
+          const result = data.result || { reply: data.reply, fun_one_liner: data.fun };
+          setPlantResult(result);
+          await autoMakeTheater({
+            from: 'plant',
+            data: result,
+            preview,
+            humanPreview,
+            fun: result?.fun_one_liner,
+          });
+        }
       } else {
-        const res = await fetch('/api/analyze', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ species: speciesToUse, userText, imageData: dataURL, lang: 'zh' })
-        });
-        return res.json();
+        if (data.error) {
+          setImgReply(`❌ 錯誤：${data.error}${data.details ? '｜' + data.details : ''}`);
+        } else {
+          setImgReply(data.reply || '（沒有回覆）');
+          await autoMakeTheater({
+            from: 'animal',
+            data,
+            preview,
+            humanPreview,
+            fun: data.fun,
+          });
+        }
       }
+
+    } catch {
+      if (species === 'plant') setPlantResult({ error: 'Internal error' });
+      else setImgReply('⚠️ 發生錯誤，請稍候再試');
+    } finally {
+      setImgLoading(false); setPlantLoading(false);
     }
-
-    let data = await sendBy(species);
-
-    // 2) 若這次回傳帶偵測欄位，且與目前 species 明顯不一致 → 提示切換
-    const detected = data?.detected_species;
-    const conf = typeof data?.confidence === 'number' ? data.confidence : 0;
-    const mismatch =
-      detected &&
-      detected !== 'unknown' &&
-      detected !== species &&
-      conf >= 0.7;
-
-    if (mismatch) {
-      const zh =
-        detected === 'cat' ? '貓' :
-        detected === 'dog' ? '狗' :
-        detected === 'plant' ? '植物' : '未知';
-      const ok = confirm(`看起來像是：${zh}（信心 ${(conf * 100).toFixed(0)}%）。要切換成「${zh}」並用正確方式重新分析嗎？`);
-      if (ok) {
-        // 切 species，並依偵測到的物種重送一次
-        setSpecies(detected);
-        data = await sendBy(detected);
-      }
-    }
-
-    // 3) 照結果渲染
-    if (species === 'plant' || (mismatch && detected === 'plant')) {
-      if (data.error) setPlantResult({ error: data.error, details: data.details });
-      else setPlantResult(data.result || { reply: data.reply, fun_one_liner: data.fun });
-    } else {
-      if (data.error) setImgReply(`❌ 錯誤：${data.error}${data.details ? '｜' + data.details : ''}`);
-      else setImgReply(data.reply || '（沒有回覆）');
-    }
-
-  } catch {
-    if (species === 'plant') setPlantResult({ error: 'Internal error' });
-    else setImgReply('⚠️ 發生錯誤，請稍候再試');
-  } finally {
-    setImgLoading(false); setPlantLoading(false);
   }
-}
 
-
-  // --- 生成內心劇場 ---
+  // （保留：手動產生備援）
   async function handleGenerateTheater() {
     if (!preview) return alert('請先選擇主照片');
     const style = humanPreview ? 'realistic_bubble_human' : 'realistic_bubble';
-
-    // 語音分析優先取第一行，避免太長；否則退回其他來源
     const fromAudio = audioAdvice ? audioAdvice.split('\n')[0].slice(0, 60) : '';
     const petThought =
       (fromAudio) ||
@@ -277,9 +321,6 @@ export default function HomeClient2() {
       humanPhoto: humanPreview || undefined
     });
     setTheaterUrl(url);
-
-    // 直接觸發下載
-    const a = document.createElement('a'); a.href = url; a.download = 'theater.png'; a.click();
   }
 
   return (
@@ -426,11 +467,7 @@ export default function HomeClient2() {
       {/* 聲音諮詢（結果也會餵進內心劇場台詞） */}
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
         <h3 style={{ marginTop: 0 }}>聲音諮詢：</h3>
-        <AudioConsult
-  species={species}
-  onAdvice={setAudioAdvice}
-  onSpeciesChange={setSpecies}
-/>
+        <AudioConsult species={species} onAdvice={setAudioAdvice} onSpeciesChange={setSpecies} />
         {audioAdvice && (
           <div style={{ marginTop: 8, fontSize: 12, color: '#2563eb' }}>
             ✅ 已擷取語音分析結果，將用於內心劇場台詞。
@@ -438,20 +475,22 @@ export default function HomeClient2() {
         )}
       </section>
 
-      {/* 內心劇場 */}
+      {/* 內心劇場（自動產生；下方保留一鍵重生作為備援） */}
       {canShowCreative && (
         <section style={{ marginTop: 20, padding: 12, border: '1px solid #eee', borderRadius: 8 }}>
           <h3>🎭 內心劇場</h3>
-          <p style={{ color: '#555', marginTop: 4 }}>
-            會依是否上傳本人照片，自動選擇風格：有本人→「寫實＋泡泡＋小人」，沒有→「寫實＋泡泡」。
-          </p>
+          {theaterUrl && (
+            <div style={{ marginTop: 10 }}>
+              <img src={theaterUrl} alt="內心劇場" style={{ width: '100%', borderRadius: 8, border: '1px solid #ddd' }} />
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
             <button onClick={handleGenerateTheater} style={{ padding: '10px 16px' }}>
-              生成內心劇場圖
+              重新生成（備援）
             </button>
             {theaterUrl && (
               <a href={theaterUrl} download='theater.png' style={{ padding: '10px 16px', border: '1px solid #ddd', borderRadius: 6 }}>
-                下載最新內心劇場圖
+                下載目前圖片
               </a>
             )}
           </div>
