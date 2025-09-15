@@ -4,116 +4,108 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+// 這支 API：分析「寵物/植物照片」，回覆專業建議 + 必有的詼諧一句話(fun)。
+// 另外回傳 detected_species 與 confidence 以便自動偵測物種。
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req) {
   try {
-    if (!OPENAI_API_KEY) {
-      return NextResponse.json({ error: "Missing OPENAI_API_KEY" }, { status: 500 });
-    }
-
     const body = await req.json();
     const { species, userText = "", imageData, lang = "zh" } = body || {};
+
     if (!imageData) {
       return NextResponse.json({ error: "Missing imageData" }, { status: 400 });
     }
 
-    const schema = {
-      type: "object",
-      properties: {
-        current_state: { type: "string" },          // ← 必填：狀態判讀（1–2 句）
-        reply: { type: "string" },                  // 專業建議（3–5 點）
-        fun: { type: "string" },                    // 趣味一句話（可為空字串）
-        detected_species: {
-          type: "string",
-          enum: ["cat", "dog", "plant", "unknown"]
-        },
-        confidence: { type: "number" }              // 0..1
-      },
-      required: ["current_state", "reply", "detected_species", "confidence"],
-      additionalProperties: false
-    };
-
     const sys =
       lang === "zh"
-        ? `你是《寵物植物溝通 App》的圖片分析助理，請用繁體中文、清楚且負責任地回覆。
-規則：
+        ? `你是《寵物植物溝通 App》的圖片分析助理，請用繁體中文、清楚、負責任地回覆。
 - 不得做醫療診斷；若風險高，提醒就醫/找專業人士。
-- 僅輸出 JSON（不要多餘文字），結構與類型必須符合提供的 JSON Schema。
-- 欄位定義：
-  • current_state：1–2 句，描述你從照片判讀到「當下狀態／可能情境」（例如：葉片下垂、眼周分泌物、居家環境可能不足刺激…等）。
-  • reply：3–5 點具體可執行的步驟化建議。
-  • fun：趣味一句話（可愛但不喧賓奪主）；若沒有靈感可回空字串 ""。
-  • detected_species：cat/dog/plant/unknown
-  • confidence：0..1，對 detected_species 的信心。
-- 若無法判斷物種就回 unknown 與 0。`
+- 根據照片與描述，給 3~5 點具體建議（步驟化）。
+- 你必須輸出「單一 JSON 物件」，欄位如下（不可缺漏）：
+  - reply: string（專業分析與建議，繁體中文）
+  - fun: string（詼諧的一句話，把寵物/植物的心情轉譯出來；就算狀況不好，也要用輕鬆方式表達，不可為空）
+  - detected_species: "cat" | "dog" | "plant" | "unknown"
+  - confidence: number 0..1（你對 detected_species 的信心）
+請只輸出 JSON，不要附加任何其他文字。`
         : `You are the image-analysis assistant for a Pets & Plants app.
-Rules:
-- No medical diagnosis; if risk is high, advise to seek a vet/professional.
-- Output JSON only (no extra text) and conform to the provided JSON Schema.
-- Fields:
-  • current_state: 1–2 sentences describing what the photo suggests *right now*.
-  • reply: 3–5 actionable bullet points.
-  • fun: one-liner (may be empty "").
-  • detected_species: cat/dog/plant/unknown
-  • confidence: 0..1
-- If uncertain, return unknown and 0.`;
+- No medical diagnosis; if risk is high, advise to seek professional help.
+- Provide 3–5 actionable bullet points.
+- You MUST return a SINGLE JSON object with the following keys (no extra text):
+  - reply: string (analysis & advice)
+  - fun: string (a witty one-liner “inner monologue”; REQUIRED even if the mood is bad)
+  - detected_species: "cat" | "dog" | "plant" | "unknown"
+  - confidence: number 0..1 (confidence for detected_species).`;
 
     const userPrompt =
       lang === "zh"
-        ? `使用者選擇的物種：${species || "(未提供)"}。
-補充描述：${userText || "(無)"}。
-請分析上傳的照片，並依 JSON Schema 嚴格輸出唯一 JSON。`
-        : `User selected species: ${species || "(n/a)"}.
+        ? `使用者目前選擇的物種: ${species || "(未提供)"}。
+補充描述: ${userText || "(無)"}。
+請先理解照片內容，再依上面的要求產出唯一 JSON。`
+        : `User-selected species: ${species || "(n/a)"}.
 User notes: ${userText || "(none)"}.
-Analyze the uploaded image and return JSON strictly matching the schema.`;
+Analyze the photo and return the SINGLE JSON described above.`;
 
-    // ✅ 使用 chat.completions + response_format json_schema，並正確包 { url: ... }
-    const resp = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.2,
-      response_format: { type: "json_schema", json_schema: { name: "analysis", schema, strict: true } },
-      messages: [
+    // ✅ 用 Responses API：文字 + 圖片（注意 image_url 需為物件 { url }）
+    const resp = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      temperature: 0.5,
+      response_format: { type: "json_object" },
+      input: [
         { role: "system", content: sys },
         {
           role: "user",
           content: [
-            { type: "text", text: userPrompt },
-            { type: "image_url", image_url: { url: imageData } }
-          ]
-        }
-      ]
+            { type: "input_text", text: userPrompt },
+            { type: "input_image", image_url: { url: imageData } },
+          ],
+        },
+      ],
     });
 
-    const raw = resp?.choices?.[0]?.message?.content || "";
-    let parsed;
+    const text = (resp.output_text || "").trim();
+    let parsed = {};
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(text);
     } catch {
-      // 後援：嘗試從文字中擷取 JSON 物件
-      const m = String(raw).match(/\{[\s\S]*\}/);
-      parsed = m ? JSON.parse(m[0]) : {};
+      // 保險：嘗試抓最後一個大括號 JSON
+      const m = text.match(/\{[\s\S]*\}/);
+      if (m) parsed = JSON.parse(m[0]);
     }
 
-    // ---- 後處理保險：若模型仍漏欄位，這裡補位 ----
-    const safe = (v) => (typeof v === "string" ? v.trim() : "");
-    const reply = safe(parsed.reply);
-    const current_state = safe(parsed.current_state) || reply.split(/[。\n]/)[0]?.slice(0, 60) || "目前狀態未明確，建議先觀察並補充描述。";
-    const fun = safe(parsed.fun) || "";
+    // 後處理：強保欄位存在與格式正確
+    const detectedRaw = parsed?.detected_species;
     const detected =
-      ["cat", "dog", "plant"].includes(parsed.detected_species) ? parsed.detected_species : "unknown";
-    const conf = typeof parsed.confidence === "number" ? Math.max(0, Math.min(1, parsed.confidence)) : 0;
+      detectedRaw === "cat" || detectedRaw === "dog" || detectedRaw === "plant"
+        ? detectedRaw
+        : "unknown";
 
-    return NextResponse.json({
-      current_state,
-      reply: reply || "（沒有回覆）",
-      fun,
+    const payload = {
+      reply: typeof parsed?.reply === "string" && parsed.reply.trim()
+        ? parsed.reply.trim()
+        : (lang === "zh"
+            ? "目前狀況資訊有限，請補充更多背景（年齡、環境、發作時間、頻率等），以獲得更精準建議。"
+            : "Info is limited. Please add more context (age, environment, timing/frequency) for better advice."),
+      // 永遠補上一句詼諧台詞
+      fun: typeof parsed?.fun === "string" && parsed.fun.trim()
+        ? parsed.fun.trim()
+        : (lang === "zh"
+            ? "嗯…本喵/本葉今天有點小情緒，但先照顧好基本需求，我很快就恢復元氣！"
+            : "Hmm… not in the best mood, but take care of the basics and I’ll bounce back soon!"),
       detected_species: detected,
-      confidence: conf
-    });
+      confidence:
+        typeof parsed?.confidence === "number"
+          ? Math.max(0, Math.min(1, parsed.confidence))
+          : 0,
+    };
+
+    return NextResponse.json(payload);
   } catch (e) {
     console.error(e);
-    return NextResponse.json({ error: "Internal error", details: String(e?.message || e) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal error", details: String(e?.message || e) },
+      { status: 500 }
+    );
   }
 }
