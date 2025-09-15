@@ -8,66 +8,57 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json(
-        { error: "Missing OPENAI_API_KEY" },
-        { status: 500 }
-      );
-    }
-
     const body = await req.json();
     const { species, userText = "", imageData, lang = "zh" } = body || {};
-    if (!imageData || typeof imageData !== "string") {
-      return NextResponse.json({ error: "Missing imageData" }, { status: 400 });
-    }
+    if (!imageData) return NextResponse.json({ error: "Missing imageData" }, { status: 400 });
 
     const sys =
       lang === "zh"
         ? `你是《寵物植物溝通 App》的圖片分析助理，請用繁體中文、清楚、負責任地回覆。
 - 不得做醫療診斷；若風險高，提醒就醫/找專業人士。
-- 根據照片與描述，給 3~5 點具體建議（步驟化）。
-- 你必須輸出「單一 JSON 物件」，欄位如下（不可缺漏）：
+- 依照片與描述，給 3~5 點具體建議（步驟化）。
+- 你必須回傳唯一「JSON 物件」，欄位（不可缺漏）：
   - reply: string（專業分析與建議，繁體中文）
-  - fun: string（詼諧的一句話，把寵物/植物的心情轉譯出來；就算狀況不好，也要用輕鬆方式表達，不可為空）
+  - fun: string（一句話，**第一人稱視角**，像是寵物/植物自己說話。例：「我今天超想曬太陽！」、「我有點不舒服，想要安靜一下。」）
   - detected_species: "cat" | "dog" | "plant" | "unknown"
   - confidence: number 0..1（你對 detected_species 的信心）
-請只輸出 JSON，不要附加任何其他文字。`
+請只輸出 JSON，不要附加其他文字。`
         : `You are the image-analysis assistant for a Pets & Plants app.
-- No medical diagnosis; if risk is high, advise to seek professional help.
-- Provide 3–5 actionable bullet points.
-- You MUST return a SINGLE JSON object with the following keys (no extra text):
+- No medical diagnosis; add "seek professional help" when risk is high.
+- Provide 3–5 actionable steps.
+- You MUST return a SINGLE JSON object with keys:
   - reply: string (analysis & advice)
-  - fun: string (a witty one-liner “inner monologue”; REQUIRED even if the mood is bad)
+  - fun: string (ONE short line in **first-person voice** as if the pet/plant is speaking; e.g., "I'm so ready for sunbathing!")
   - detected_species: "cat" | "dog" | "plant" | "unknown"
-  - confidence: number 0..1 (confidence for detected_species).`;
+  - confidence: number 0..1
+Return ONLY the JSON.`
 
     const userPrompt =
       lang === "zh"
         ? `使用者選擇的物種: ${species || "(未提供)"}。
 補充描述: ${userText || "(無)"}。
-請先理解照片內容，再依上面的要求產出唯一 JSON。`
-        : `User-selected species: ${species || "(n/a)"}.
-User notes: ${userText || "(none)"}.
-Analyze the photo and return the SINGLE JSON described above.`;
+先理解照片，再產出上面格式的唯一 JSON。`
+        : `User-selected species: ${species || "(n/a)"}
+User notes: ${userText || "(none)"}
+Analyze the photo and return ONLY the JSON.`
 
-    // ✅ 用 chat.completions（相容 openai@4.58.1）
-    const chat = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+    const resp = await openai.responses.create({
+      model: "gpt-4.1-mini",
       temperature: 0.5,
       response_format: { type: "json_object" },
-      messages: [
+      input: [
         { role: "system", content: sys },
         {
           role: "user",
           content: [
-            { type: "text", text: userPrompt },
-            { type: "image_url", image_url: { url: imageData } },
+            { type: "input_text", text: userPrompt },
+            { type: "input_image", image_url: { url: imageData } },
           ],
         },
       ],
     });
 
-    const text = chat.choices?.[0]?.message?.content?.trim() || "";
+    const text = (resp.output_text || "").trim();
     let parsed = {};
     try {
       parsed = JSON.parse(text);
@@ -76,26 +67,38 @@ Analyze the photo and return the SINGLE JSON described above.`;
       if (m) parsed = JSON.parse(m[0]);
     }
 
-    // 正規化
-    const validSpecies = new Set(["cat", "dog", "plant"]);
-    const detected = validSpecies.has(parsed?.detected_species)
-      ? parsed.detected_species
-      : "unknown";
+    // --- 後處理：確保欄位正確 + fun 一定是第一人稱 ---
+    const detectedRaw = parsed?.detected_species;
+    const detected =
+      detectedRaw === "cat" || detectedRaw === "dog" || detectedRaw === "plant"
+        ? detectedRaw
+        : "unknown";
+
+    let fun = typeof parsed?.fun === "string" ? parsed.fun.trim() : "";
+    if (!fun) {
+      fun =
+        lang === "zh"
+          ? "我今天有點小情緒，但先把水、食物和休息顧好，很快就會恢復元氣！"
+          : "I'm a bit moody today, but keep my basics comfy and I’ll bounce back!";
+    } else {
+      // 簡單偵測是否像第三人稱；若不是第一人稱，補上「我」視角
+      const looksThird =
+        /他|她|牠|該|這隻|那隻|the cat|the dog|the plant|it\b/i.test(fun) &&
+        !/[我|I\b]/.test(fun);
+      if (looksThird) {
+        fun =
+          (lang === "zh" ? "我想說—" : "I feel like this — ") + fun.replace(/^(\s*[:：-]\s*)/, "");
+      }
+    }
 
     const payload = {
       reply:
         typeof parsed?.reply === "string" && parsed.reply.trim()
           ? parsed.reply.trim()
-          : (lang === "zh"
-              ? "目前資訊有限，請補充更多背景（年齡、環境、發作時間、頻率等），以獲得更精準建議。"
-              : "Info is limited. Please add age, environment, timing/frequency for better advice."),
-      // 一定給一個不為空的詼諧一句話
-      fun:
-        typeof parsed?.fun === "string" && parsed.fun.trim()
-          ? parsed.fun.trim()
-          : (lang === "zh"
-              ? "嗯…今天情緒有點小打結，但先把水、食、環境顧好，我很快就復活！"
-              : "Hmm… a little knotted today, but with water, food and comfort I’ll bounce back soon!"),
+          : lang === "zh"
+          ? "目前資訊有限，請補充年齡、環境、症狀發生時間與頻率等背景，以獲得更精準建議。"
+          : "Info is limited; add age, environment, timing/frequency for better advice.",
+      fun,
       detected_species: detected,
       confidence:
         typeof parsed?.confidence === "number"
