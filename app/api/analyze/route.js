@@ -6,73 +6,89 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ---- helpers ----
-function cleanFirstPersonLine(t = "", species = "pet") {
-  let s = String(t || "").trim();
-  // 去掉「我覺得/看起來/似乎/可能」等前綴
-  s = s.replace(/^(我)?(覺得|想|認為|感覺|好像|看起來|似乎|可能)[，,:：\s]*/u, "");
-  // 牠/它 -> 我
-  s = s.replace(/(牠|它)/g, "我");
-  // 必須第一人稱起頭
-  if (!/^我/.test(s)) s = "我" + s;
-  // 預設兜底
-  if (!s || s === "我") s = species === "dog" ? "我超想散步，現在就出發！" : "我今天心情很好，想窩一下～";
-  // 限長（中文字以 codepoint 計）
-  const MAX = 24;
-  if ([...s].length > MAX) s = [...s].slice(0, MAX - 1).join("") + "…";
-  // 結尾標點
-  if (!/[。！？!]$/.test(s)) s += "！";
-  return s;
-}
+// —— 小工具：把一句話「更像第一人稱、可愛又精煉」——
+function polishOneLiner(species, text, lang = "zh") {
+  let t = String(text || "").trim();
 
-function fallbackFromState(state = "", species = "pet") {
-  const text = (state || "").toString();
-  const rules = [
-    { k: /(放鬆|舒服|安穩|躺著|睡)/, out: "我現在超放鬆，先睡一小會兒～" },
-    { k: /(緊張|害怕|不安|警戒)/, out: "我有點緊張，先給我點距離好嗎？" },
-    { k: /(飢|餓|食慾|吃)/, out: "我想先填飽肚子，再聊！" },
-    { k: /(渴|水|喝)/, out: "我想喝水，補充一下能量！" },
-    { k: /(悶熱|熱|流汗)/, out: "我有點熱，幫我換個涼快的地方～" },
-    { k: /(冷|發抖)/, out: "我有點冷，想靠近你取暖。" },
-    { k: /(疼|痛|不適|不舒服)/, out: "我哪裡不太舒服，請幫我看看…" },
-  ];
-  for (const r of rules) if (r.k.test(text)) return r.out;
-  return species === "dog" ? "我想出去走走，順便聞聞世界！" : "我今天狀態不錯，想被摸摸～";
+  // 常見冗詞 & 第三人稱 → 第一人稱
+  const junk = [/^我覺得[，、:\s]?/, /^看起來[，、:\s]?/, /^似乎[，、:\s]?/, /^可能[，、:\s]?/];
+  junk.forEach((re) => (t = t.replace(re, "")));
+
+  // 把「牠/它/他」主語改成「我」
+  t = t.replace(/^(牠|它|他)[是在有把的了地著過也都就還會呢嗎呀啊]+/u, "");
+  t = t.replace(/(牠|它|他)覺得/g, "我覺得");
+  t = t.replace(/(牠|它|他)想/g, "我想");
+  t = t.replace(/(牠|它|他)要/g, "我要");
+
+  // 物種小稱呼
+  const nick =
+    species === "dog" ? "本汪" :
+    species === "cat" ? "本喵" :
+    "我";
+
+  // 若不是第一人稱，補一個第一人稱開頭
+  if (!/^(我|本喵|本汪|本葉|俺|偶)/.test(t)) {
+    t = `${nick}${t.startsWith("是") ? "" : (t.match(/^[，。、!?…]/) ? "" : " ")}${t}`;
+  }
+
+  // 避免太長（中文字抓 22 字，英文抓 ~50 字）
+  if (lang === "zh") {
+    const limit = 22;
+    let count = 0, out = "";
+    for (const ch of t) {
+      count += 1;
+      if (count > limit) break;
+      out += ch;
+    }
+    t = out;
+  } else {
+    t = t.split(/\s+/).slice(0, 12).join(" ");
+  }
+
+  // 結尾語氣：可愛但不吵
+  if (!/[。！!?～]$/.test(t)) t += (lang === "zh" ? "～" : "~");
+
+  return t;
 }
 
 export async function POST(req) {
   try {
     const body = await req.json();
     const { species = "cat", userText = "", imageData, lang = "zh" } = body || {};
-    if (!imageData) {
-      return NextResponse.json({ error: "Missing imageData" }, { status: 400 });
+    if (!imageData || !imageData.startsWith("data:image/")) {
+      return NextResponse.json({ error: "Invalid imageData (need data URL)" }, { status: 400 });
     }
 
     const SYS =
       lang === "zh"
-        ? `你是寵物圖片分析助理。請以「第三人稱」提供專業觀察，不做醫療診斷；必要時提醒就醫。
-輸出唯一 JSON：
-{
-  "state": string,              // 目前狀態（第三人稱）
-  "issues": string[],           // 可能問題（第三人稱）
-  "suggestions": string[],      // 3~6 點具體建議（第三人稱）
-  "fun_one_liner": string       // 內心小劇場用的一句話，必須：第一人稱（以「我」起頭）、不超過 24 個中文字、不得包含「我覺得/看起來/似乎/可能/牠/它」等
+        ? `你是寵物影像解析助手，回覆**只用繁體中文**。
+請輸出單一 JSON：{
+  "state": string,              // 第三人稱、2~4 句：描述目前狀態（姿勢/神情/動作/環境）。
+  "issues": string[],           // 0~4 項可能風險或需要留意的點（精煉名詞片語）。
+  "suggestions": string[],      // 3~6 條可執行步驟（直接動詞開頭、短句）。
+  "fun_one_liner": string       // 由寵物第一人稱說的一句話，可愛自然、口語、<= 22 字，不要出現「我覺得/看起來」，不要#與顏文字，最多 1 個結尾符號。
 }
-只回 JSON，不要其他文字。`
-        : `You are a pet image assistant. Provide analysis in third person; no medical diagnosis. Return ONLY JSON:
+注意：
+- "state" 與 "suggestions" 必須第三人稱敘述（牠/貓咪/狗狗）。
+- "fun_one_liner" 必須第一人稱（我/本喵/本汪），自然口語，可愛、別說教，像是正在「心裡說話」。
+- 內容僅做健康照護建議，**不得醫療診斷**。如有高度風險，請在 suggestions 內加入「儘速就醫/找專業」。`
+        : `You are a pet image analyst. Output ONE JSON object only:
 {
-  "state": string, "issues": string[], "suggestions": string[],
-  "fun_one_liner": string  // first-person, starts with "I", <= 60 chars, no "I think/it seems/it/its"
-}`;
+  "state": string,              // 2–4 sentences, third-person description of current posture/mood/environment.
+  "issues": string[],           // 0–4 concise possible issues.
+  "suggestions": string[],      // 3–6 actionable steps (imperative, concise).
+  "fun_one_liner": string       // First-person witty inner monologue, ≤ 12 words, natural & cute, no hashtags or emojis.
+}
+No medical diagnosis. If high risk, include "seek a vet" inside suggestions.`;
 
     const USER =
       lang === "zh"
-        ? `物種：${species}；使用者補充：${userText || "（無）"}`
-        : `Species: ${species}; User notes: ${userText || "(none)"}`;
+        ? `物種：${species}。\n使用者補充：${userText || "（無）"}。\n請先理解圖片再輸出 JSON。`
+        : `Species: ${species}\nUser notes: ${userText || "(none)"}\nAnalyze the image then return JSON only.`;
 
     const chat = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      temperature: 0.4,
+      temperature: 0.2,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: SYS },
@@ -90,25 +106,19 @@ export async function POST(req) {
     let parsed = {};
     try { parsed = JSON.parse(raw); } catch { parsed = {}; }
 
-    // 產圖台詞（第一人稱）強化與兜底
-    let fun = cleanFirstPersonLine(parsed?.fun_one_liner, species);
-    if (!fun || fun === "我！" || fun === "我…！") {
-      fun = cleanFirstPersonLine(fallbackFromState(parsed?.state, species), species);
-    }
+    // 後處理保險：確保有一個可愛的一句話
+    const fun = polishOneLiner(species, parsed.fun_one_liner, lang);
 
     const payload = {
-      state: typeof parsed?.state === "string" ? parsed.state : "",
-      issues: Array.isArray(parsed?.issues) ? parsed.issues : [],
-      suggestions: Array.isArray(parsed?.suggestions) ? parsed.suggestions : [],
+      state: typeof parsed.state === "string" ? parsed.state.trim() : "",
+      issues: Array.isArray(parsed.issues) ? parsed.issues.slice(0, 4) : [],
+      suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.slice(0, 6) : [],
       fun_one_liner: fun,
+      model: "gpt-4o-mini",
     };
 
     return NextResponse.json(payload);
   } catch (e) {
-    console.error(e);
-    return NextResponse.json(
-      { error: "Internal error", details: String(e?.message || e) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal error", details: String(e?.message || e) }, { status: 500 });
   }
 }
