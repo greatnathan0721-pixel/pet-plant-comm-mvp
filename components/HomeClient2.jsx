@@ -22,7 +22,7 @@ async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
 }
 
 // --- 內心劇場（前端 Canvas 合成，不存人像） ---
-async function generateTheaterImage({ basePhoto, style, petThought = '今天也要好好長葉子！', humanPhoto }) {
+async function generateTheaterImage({ basePhoto, style, petThought = '我今天心情很好！', humanPhoto }) {
   const W = 1080, H = 1350;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
@@ -33,37 +33,40 @@ async function generateTheaterImage({ basePhoto, style, petThought = '今天也�
     realistic_bubble_human: { bg: '#0c1116', frame: '#ffffff20', tint: null },
   }[style] || { bg: '#0c1116', frame: '#ffffff20', tint: null };
 
+  // 背景
   ctx.fillStyle = theme.bg; ctx.fillRect(0, 0, W, H);
 
+  // 主圖
   const img = await loadImg(basePhoto);
   const fit = coverRect(img.width, img.height, W, H);
   ctx.drawImage(img, fit.sx, fit.sy, fit.sw, fit.sh, 0, 0, W, H);
 
   if (theme.tint) { ctx.fillStyle = theme.tint; ctx.fillRect(0, 0, W, H); }
 
+  // 外框
   ctx.strokeStyle = theme.frame; ctx.lineWidth = 24; ctx.strokeRect(12, 12, W - 24, H - 24);
 
+  // 對話泡泡（寵物/植物第一人稱台詞）
   drawSpeechBubble(ctx, { x: W - 60, y: H - 280, text: petThought, align: 'right' });
 
+  // (可選) 小人國大頭貼
   if (style === 'realistic_bubble_human' && humanPhoto) {
     const human = await loadImg(humanPhoto);
     const R = 140, cx = 140, cy = H - 160;
     ctx.save();
     ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.closePath(); ctx.clip();
-    const hf = coverRect(human.width, human.height, R*2, R*2);
+    const hf = coverRect(human.width, human.height, R * 2, R * 2);
     ctx.drawImage(human, hf.sx, hf.sy, hf.sw, hf.sh, cx - R, cy - R, R * 2, R * 2);
     ctx.restore();
     ctx.strokeStyle = '#ffffffcc'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
-    drawSpeechBubble(ctx, { x: 280, y: H - 300, text: '你在想什麼呢？', align: 'left' });
+    drawSpeechBubble(ctx, { x: 280, y: H - 300, text: '我在你旁邊看著你喔！', align: 'left' });
   }
 
-  // 左上角標籤
-  ctx.fillStyle = '#ffffffdd'; ctx.font = '600 36px system-ui, -apple-system, Segoe UI, Roboto';
-  const label = style === 'realistic_bubble_human' ? '🗨️ 寫實＋泡泡＋小人' : '🗨️ 寫實＋泡泡';
-  ctx.fillText(label, W - ctx.measureText(label).width - 28, 64);
+  // ✅ 已移除右上角「寫實＋泡泡」的文字標籤
 
   return canvas.toDataURL('image/png');
 
+  // ----- helpers -----
   function coverRect(sw, sh, dw, dh) {
     const sRatio = sw / sh, dRatio = dw / dh;
     let sx, sy, sw2, sh2;
@@ -120,6 +123,7 @@ async function generateTheaterImage({ basePhoto, style, petThought = '今天也�
     }
   }
 }
+
 
 export default function HomeClient2() {
   // 共用狀態
