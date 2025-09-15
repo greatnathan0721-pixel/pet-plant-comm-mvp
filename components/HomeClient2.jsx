@@ -127,15 +127,15 @@ export default function HomeClient2() {
   const [loading, setLoading] = useState(false);
 
   // 圖片
-  const [imgReply, setImgReply] = useState(''); // 動物：用不到時可留空
+  const [imgReply, setImgReply] = useState('');
   const [preview, setPreview] = useState('');
   const fileRef = useRef(null);
   const [humanPreview, setHumanPreview] = useState('');
   const humanRef = useRef(null);
 
   // 植物 / 動物結果
-  const [plantResult, setPlantResult] = useState(null); // {state, likely_issues, care_steps, fun_one_liner, ...}
-  const [petResult, setPetResult] = useState(null);     // {state, issues, suggestions, fun_one_liner, ...}
+  const [plantResult, setPlantResult] = useState(null);
+  const [petResult, setPetResult] = useState(null);
   const [imgLoading, setImgLoading] = useState(false);
 
   // 內心劇場圖
@@ -144,7 +144,7 @@ export default function HomeClient2() {
   // 語音分析（可選，僅提示）
   const [audioAdvice, setAudioAdvice] = useState('');
 
-  // --- 文字諮詢（與圖片無關，保持原樣） ---
+  // --- 文字諮詢 ---
   async function handleTextSubmit(e) {
     e.preventDefault();
     setLoading(true); setReply(''); setFun('');
@@ -183,10 +183,11 @@ export default function HomeClient2() {
   async function handlePhotoConsult() {
     const file = fileRef.current?.files?.[0];
     if (!file) return alert('請先選擇諮詢照片');
-    setImgLoading(true); setPlantResult(null); setPetResult(null); setTheaterUrl('');
+    setImgLoading(true); setPlantResult(null); setPetResult(null); setTheaterUrl(''); setImgReply('');
 
     try {
       const dataURL = await compressImageToDataURL(file, 720, 0.7);
+      const basePhoto = preview || dataURL;
 
       if (species === 'plant') {
         const res = await fetch('/api/plant/identify', {
@@ -197,12 +198,14 @@ export default function HomeClient2() {
         const data = await res.json();
         if (data.error) {
           setPlantResult({ error: data.error, details: data.details });
+          setTheaterUrl('');
         } else {
-          const result = data; // 後端已回 payload
+          // ✅ 從後端取 result（不是整個 data）
+          const result = data.result || {};
           setPlantResult(result);
-          const bubble = result.fun_one_liner || '我想要剛剛好的陽光和一點水分 🌱';
+          const bubble = result.fun_one_liner || '我想要剛剛好的陽光和一點水分～';
           const url = await generateTheaterImage({
-            basePhoto: preview || dataURL,
+            basePhoto,
             petThought: bubble,
             humanPhoto: humanPreview || undefined,
           });
@@ -217,11 +220,12 @@ export default function HomeClient2() {
         const data = await res.json();
         if (data.error) {
           setImgReply(`❌ 錯誤：${data.error}${data.details ? '｜' + data.details : ''}`);
+          setTheaterUrl('');
         } else {
           setPetResult(data);
           const bubble = data.fun_one_liner || '我今天心情不錯，想多睡一會兒～';
           const url = await generateTheaterImage({
-            basePhoto: preview || dataURL,
+            basePhoto,
             petThought: bubble,
             humanPhoto: humanPreview || undefined,
           });
@@ -232,6 +236,7 @@ export default function HomeClient2() {
       console.error(e);
       if (species === 'plant') setPlantResult({ error: 'Internal error' });
       else setImgReply('⚠️ 發生錯誤，請稍候再試');
+      setTheaterUrl('');
     } finally {
       setImgLoading(false);
     }
@@ -357,8 +362,12 @@ export default function HomeClient2() {
                   <li>名稱：{plantResult.common_name || '未知'}（{plantResult.scientific_name || '-'}）</li>
                   <li>信心：{typeof plantResult.confidence === 'number' ? (plantResult.confidence*100).toFixed(0) + '%' : '-'}</li>
                 </ul>
-                <strong>目前狀態</strong>
-                <p style={{ whiteSpace: 'pre-line' }}>{plantResult.state}</p>
+                {plantResult.state && (
+                  <>
+                    <strong>目前狀態</strong>
+                    <p style={{ whiteSpace: 'pre-line' }}>{plantResult.state}</p>
+                  </>
+                )}
                 {Array.isArray(plantResult.likely_issues) && plantResult.likely_issues.length > 0 && (
                   <>
                     <strong>可能問題</strong>
