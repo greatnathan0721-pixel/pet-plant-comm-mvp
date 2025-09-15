@@ -4,20 +4,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
-// 這支 API：分析寵物/植物照片，回覆專業建議 + 必有詼諧一句話(fun)
-// 另外回傳 detected_species 與 confidence 以便自動偵測物種。
-
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// 將看起來像第三人稱的句子轉成第一人稱（保守處理）
-function forceFirstPerson(t) {
-  if (!t || typeof t !== "string") return "";
-  let s = t.trim();
-  s = s.replace(/^(\s*)(牠|它|這隻|那隻|這株|那株|這盆|那盆)\s*(覺得|好像|可能|今天|現在)?/i, "$1我$3");
-  s = s.replace(/\b(the (cat|dog|pet|animal|plant)|it)\b/gi, "我");
-  if (!/[我]/.test(s)) s = "我想說—" + s.replace(/^(\s*[:：-]\s*)/, "");
-  return s;
-}
 
 export async function POST(req) {
   try {
@@ -31,81 +18,98 @@ export async function POST(req) {
       lang === "zh"
         ? `你是《寵物植物溝通 App》的圖片分析助理，請用繁體中文、清楚、負責任地回覆。
 - 不得做醫療診斷；若風險高，提醒就醫/找專業人士。
-- 根據照片與描述，給 3~5 點具體建議（步驟化）。
-- 你必須輸出「單一 JSON 物件」，欄位如下（不可缺漏）：
-  - reply: string（專業分析與建議，繁體中文）
-  - fun: string（第一人稱、詼諧的一句話，把寵物/植物的心情轉譯出來；就算狀況不好，也要用輕鬆方式表達，不可為空）
-  - detected_species: "cat" | "dog" | "plant" | "unknown"
-  - confidence: number 0..1（你對 detected_species 的信心）
-請只輸出 JSON，不要附加任何其他文字。`
+- 你必須只輸出「單一 JSON 物件」，且 *四個欄位不可缺漏*：
+  - state: string（用 1–2 句描述「目前狀態/你觀察到的情形」；務必直白、具體）
+  - severity: "low" | "medium" | "high"（整體風險）
+  - reply: string（3–5 點具體建議，步驟化，換行或條列）
+  - fun: string（詼諧的一句話，必須用第一人稱，好像寵物/植物自己在講話）
+另外請同時輸出（若能偵測）：detected_species: "cat"|"dog"|"plant"|"unknown" 與 confidence: number(0..1)。
+只輸出 JSON，不要附加任何其他文字。`
         : `You are the image-analysis assistant for a Pets & Plants app.
-- No medical diagnosis; if risk is high, advise to seek professional help.
-- Provide 3–5 actionable bullet points.
-- You MUST return a SINGLE JSON object with:
-  - reply: string (analysis & advice)
-  - fun: string (witty FIRST-PERSON one-liner; REQUIRED even if mood is bad)
-  - detected_species: "cat" | "dog" | "plant" | "unknown"
-  - confidence: number 0..1 (confidence for detected_species).
-Return ONLY the JSON object.`;
+- No medical diagnosis; advise professional help if risk is high.
+- Return ONLY a SINGLE JSON object with these REQUIRED keys:
+  - state: string (1–2 sentences describing the current observed condition)
+  - severity: "low" | "medium" | "high"
+  - reply: string (3–5 actionable bullets/steps)
+  - fun: string (a witty one-liner in FIRST PERSON, as if the pet/plant is speaking)
+Optionally also include detected_species ("cat"|"dog"|"plant"|"unknown") and confidence (0..1).`;
 
     const userPrompt =
       lang === "zh"
         ? `使用者目前選擇的物種: ${species || "(未提供)"}。
-補充描述: ${userText || "(無)"}。`
+補充描述: ${userText || "(無)"}。
+請先理解照片內容，再依上面的要求產出唯一 JSON。`
         : `User-selected species: ${species || "(n/a)"}.
 User notes: ${userText || "(none)"}.
-Analyze the photo and follow the JSON schema.`;
+Analyze the photo and return the SINGLE JSON described above.`;
 
-    // ✅ 使用 Chat Completions（與 plant 路由同風格、穩定）
-    const chat = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+    // Responses API：文字 + 圖片（image_url 需為物件 { url }）
+    const resp = await openai.responses.create({
+      model: "gpt-4.1-mini",
       temperature: 0.5,
       response_format: { type: "json_object" },
-      messages: [
+      input: [
         { role: "system", content: sys },
         {
           role: "user",
           content: [
-            { type: "text", text: userPrompt },
-            { type: "image_url", image_url: { url: imageData } },
+            { type: "input_text", text: userPrompt },
+            { type: "input_image", image_url: { url: imageData } },
           ],
         },
       ],
     });
 
-    const raw = chat?.choices?.[0]?.message?.content?.trim() || "{}";
+    const text = (resp.output_text || "").trim();
     let parsed = {};
     try {
-      parsed = JSON.parse(raw);
+      parsed = JSON.parse(text);
     } catch {
-      const m = raw.match(/\{[\s\S]*\}/);
-      if (m) parsed = JSON.parse(m[0]);
+      const m = text.match(/\{[\s\S]*\}/);
+      if (m) {
+        try { parsed = JSON.parse(m[0]); } catch {}
+      }
     }
 
-    // 後處理：欄位健全 + fun 一律第一人稱 & 有預設
+    // ---- 正規化 & 保底 ----
     const detectedRaw = parsed?.detected_species;
     const detected =
       detectedRaw === "cat" || detectedRaw === "dog" || detectedRaw === "plant"
         ? detectedRaw
         : "unknown";
 
-    let fun = typeof parsed?.fun === "string" ? parsed.fun.trim() : "";
-    if (!fun) {
-      fun =
-        lang === "zh"
-          ? "我今天有點小情緒，但先把基本需求照顧好，我很快就恢復元氣！"
-          : "I’m not in the best mood, but take care of the basics and I’ll bounce back soon!";
-    }
-    fun = forceFirstPerson(fun);
+    const normSeverity = (v) =>
+      v === "low" || v === "medium" || v === "high" ? v : "low";
+
+    const pickFirstSentence = (s = "") =>
+      String(s)
+        .split(/\n|。|！|!|？|\?/)
+        .map((t) => t.trim())
+        .filter(Boolean)[0] || "";
+
+    const stateText =
+      (typeof parsed?.state === "string" && parsed.state.trim()) ||
+      pickFirstSentence(parsed?.reply) ||
+      (lang === "zh"
+        ? "目前狀態未明確，建議補充更多背景（時間、頻率、環境）。"
+        : "Current state unclear; please add timing/frequency/environment.");
+
+    const funText =
+      (typeof parsed?.fun === "string" && parsed.fun.trim()) ||
+      (lang === "zh"
+        ? "我今天有點小小情緒，但把基本需求顧好，我很快就恢復元氣！"
+        : "I’m a bit moody today, but take care of the basics and I’ll bounce back soon!");
 
     const payload = {
+      state: stateText,
+      severity: normSeverity(parsed?.severity),
       reply:
         typeof parsed?.reply === "string" && parsed.reply.trim()
           ? parsed.reply.trim()
           : lang === "zh"
-          ? "目前資訊有限，請補充年齡、環境、發生時間/頻率等，以獲得更精準建議。"
-          : "Info is limited. Please add age, environment, timing/frequency for better advice.",
-      fun,
+          ? "資訊有限，請補充年齡、環境、時間與頻率等背景，以獲得更精準建議。"
+          : "Info is limited. Please add age, environment, timing/frequency.",
+      fun: funText,
       detected_species: detected,
       confidence:
         typeof parsed?.confidence === "number"
