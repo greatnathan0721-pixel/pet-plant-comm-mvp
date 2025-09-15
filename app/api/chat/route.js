@@ -12,12 +12,13 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const CACHE_TTL_SECONDS = parseInt(process.env.RESPONSE_CACHE_TTL || "604800", 10); // 7天
 
+// MVP：不做任何每日次數限制（這支無限制邏輯）
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 // ---- Chat with fallback ----
 async function chatWithFallback(messages, temperature = 0.5) {
-  // 可保留你原本的候選；若未來要更新，可改為 ["gpt-4o-mini", "gpt-4.1-mini"]
+  // 你原本的候選；要升級可改為 ["gpt-4o-mini", "gpt-4.1-mini"]
   const candidates = ["gpt-4o-mini", "gpt-3.5-turbo"];
   let lastError;
 
