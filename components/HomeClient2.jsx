@@ -3,7 +3,7 @@
 import { useState, useRef } from 'react';
 import AudioConsult from './AudioConsult';
 
-// 壓縮成 dataURL（省費用）
+// 壓縮成 dataURL
 async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
   const img = document.createElement('img');
   const reader = new FileReader();
@@ -42,45 +42,9 @@ export default function HomeClient2() {
   const [theaterUrl, setTheaterUrl] = useState('');
   const [debugPrompt, setDebugPrompt] = useState('');
   const [audioAdvice, setAudioAdvice] = useState('');
-
+  const [testing, setTesting] = useState(false);
   const [theaterError, setTheaterError] = useState('');
 
-// 直接打 /api/theater（繞過 analyze/identify）
-async function quickTheaterTest() {
-  setTheaterError('');
-  const file = fileRef.current?.files?.[0];
-  if (!file && !preview) { alert('請先選擇諮詢照片'); return; }
-
-  try {
-    const basePhoto = preview || await compressImageToDataURL(file, 720, 0.7);
-    const payload = {
-      subjectType: species === 'plant' ? 'plant' : 'pet',
-      species: species === 'plant' ? 'plant' : species,
-      subjectImageUrl: basePhoto,
-      humanImageUrl: humanPreview || '',
-      stylePreset: 'cute-cartoon',
-      dialogue: { subject: '今天我心情很好～', human: '' },
-      sceneContext: { mood: 'warm', environmentHint: '', showBubbles: true },
-      composition: { humanScale: 1/6, humanPosition: 'bottom-left', enforceRules: true }
-    };
-    const res = await fetch('/api/theater', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const json = await res.json();
-    console.log('[theater debug]', json);
-    if (!json.ok) throw new Error(json.error || 'Theater API 失敗');
-    setTheaterUrl(json.imageUrl);
-    setDebugPrompt(json.prompt || '');
-  } catch (e) {
-    console.error(e);
-    setTheaterError(String(e?.message || e));
-    alert(`❌ Theater 直連測試失敗：${e?.message || e}`);
-  }
-}
-
-  
   // 文字諮詢
   async function handleTextSubmit(e) {
     e.preventDefault();
@@ -114,42 +78,45 @@ async function quickTheaterTest() {
     reader.readAsDataURL(f);
   }
 
-  // 串 Theater API（後端會強制：人不說話、左下角、主角高度 1/6）
-  async function callTheaterAPI({ basePhoto, bubble, subjectType, speciesName, humanPhoto }) {
+  // ======== 封裝：打 Theater（image-to-image 優先） ========
+  async function callTheaterAPI({ subjectImageFile, humanImageFile, bubble }) {
+    // 壓縮（<=720px）
+    const subjectImageData = subjectImageFile ? await compressImageToDataURL(subjectImageFile, 720, 0.7) : '';
+    const humanImageData = humanImageFile ? await compressImageToDataURL(humanImageFile, 720, 0.7) : '';
+
     const payload = {
-      subjectType,
-      species: speciesName || (subjectType === 'plant' ? 'plant' : 'pet'),
-      subjectImageUrl: basePhoto,       // 可用 dataURL
-      humanImageUrl: humanPhoto || undefined,
-      stylePreset: 'cute-cartoon',
+      subjectType: species === 'plant' ? 'plant' : 'pet',
+      species,
+      // 關鍵：把壓過的圖用 dataURL 傳進 API（只供 image-to-image，後端不會塞 prompt）
+      subjectImageData,
+      humanImageData,
+      stylePreset: 'photo', // 示意圖看起來較寫實
       dialogue: { subject: bubble || '', human: '' },
       sceneContext: { mood: 'warm', environmentHint: '', showBubbles: true },
       composition: { humanScale: 1/6, humanPosition: 'bottom-left', enforceRules: true },
     };
 
     const res = await fetch('/api/theater', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const json = await res.json();
-    if (!res.ok || !json?.ok) throw new Error(json?.error || 'Theater API 失敗');
-    return { imageUrl: json.imageUrl, prompt: json.prompt };
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json?.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+    return json;
   }
 
-  // 照片諮詢 → 成功後直接用 Theater API 產圖
+  // 照片諮詢 → 分析 → 再產圖（幹話會在後端再 punch-up 一次）
   async function handlePhotoConsult() {
-    const file = fileRef.current?.files?.[0];
-    if (!file) { alert('請先選擇諮詢照片'); return; }
+    const subjectFile = fileRef.current?.files?.[0];
+    if (!subjectFile) return alert('請先選擇諮詢照片');
+    const humanFile = humanRef.current?.files?.[0] || null;
 
     setImgLoading(true);
-    setPetResult(null); setPlantResult(null); setTheaterUrl(''); setDebugPrompt('');
+    setPetResult(null); setPlantResult(null); setTheaterUrl(''); setDebugPrompt(''); setTheaterError('');
 
     try {
-      const dataURL = await compressImageToDataURL(file, 720, 0.7);
-      const basePhoto = preview || dataURL;
-
       if (species === 'plant') {
+        const dataURL = await compressImageToDataURL(subjectFile, 720, 0.7);
         const res = await fetch('/api/plant/identify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -160,19 +127,11 @@ async function quickTheaterTest() {
         const result = raw.result || raw;
         setPlantResult(result);
 
-        const bubble = result.fun_one_liner || '本葉喜歡剛剛好的陽光和一口水～';
-        const speciesName = result.common_name || result.scientific_name || 'plant';
-
-        const { imageUrl, prompt } = await callTheaterAPI({
-          basePhoto,
-          bubble,
-          subjectType: 'plant',
-          speciesName,
-          humanPhoto: humanPreview || undefined,
-        });
-        setTheaterUrl(imageUrl);
-        setDebugPrompt(prompt);
+        const bubble = result.fun_one_liner || ''; // 後端會幫你幹話化
+        const out = await callTheaterAPI({ subjectImageFile: subjectFile, humanImageFile: humanFile, bubble });
+        setTheaterUrl(out.imageUrl); setDebugPrompt(out.prompt || '');
       } else {
+        const dataURL = await compressImageToDataURL(subjectFile, 720, 0.7);
         const res = await fetch('/api/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -184,25 +143,39 @@ async function quickTheaterTest() {
 
         const bubble =
           data.fun_one_liner ||
-          (species === 'cat' ? '本喵今天只想躺著被摸～'
-           : species === 'dog' ? '本汪準備出門散步啦！'
-           : '我今天心情不錯～');
-
-        const { imageUrl, prompt } = await callTheaterAPI({
-          basePhoto,
-          bubble,
-          subjectType: 'pet',
-          speciesName: species, // 'cat' | 'dog'
-          humanPhoto: humanPreview || undefined,
-        });
-        setTheaterUrl(imageUrl);
-        setDebugPrompt(prompt);
+          (species === 'cat' ? '先別摸，我在忙著高貴。' :
+           species === 'dog' ? '散步？可以，但先加一包零食。' : '');
+        const out = await callTheaterAPI({ subjectImageFile: subjectFile, humanImageFile: humanFile, bubble });
+        setTheaterUrl(out.imageUrl); setDebugPrompt(out.prompt || '');
       }
     } catch (e) {
       console.error(e);
+      setTheaterError(String(e?.message || e));
       alert(`❌ 圖片諮詢或劇場生成失敗：${e?.message || e}`);
     } finally {
       setImgLoading(false);
+    }
+  }
+
+  // 直接測試（略過分析）
+  async function quickTheaterTest() {
+    setTesting(true); setTheaterError('');
+    try {
+      const subjectFile = fileRef.current?.files?.[0];
+      if (!subjectFile && !preview) { alert('請先選擇諮詢照片'); return; }
+      const humanFile = humanRef.current?.files?.[0] || null;
+
+      const out = await callTheaterAPI({
+        subjectImageFile: subjectFile,
+        humanImageFile: humanFile,
+        bubble: '別靠近我！我不認識你！', // 測試用；後端仍會幹話化
+      });
+      setTheaterUrl(out.imageUrl); setDebugPrompt(out.prompt || '');
+    } catch (e) {
+      console.error(e);
+      setTheaterError(String(e?.message || e));
+    } finally {
+      setTesting(false);
     }
   }
 
@@ -222,13 +195,9 @@ async function quickTheaterTest() {
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
         <h3 style={{ marginTop: 0 }}>文字諮詢：</h3>
         <form onSubmit={handleTextSubmit}>
-          <textarea
-            rows={3}
-            style={{ width: '100%', padding: 10 }}
-            placeholder='輸入你的問題…'
-            value={userText}
-            onChange={(e) => setUserText(e.target.value)}
-          />
+          <textarea rows={3} style={{ width: '100%', padding: 10 }}
+            placeholder='輸入你的問題…' value={userText}
+            onChange={(e) => setUserText(e.target.value)} />
           <div style={{ marginTop: 10 }}>
             <button type="submit" disabled={loading} style={{ padding: '10px 16px' }}>
               {loading ? '處理中…' : '送出問題'}
@@ -245,7 +214,7 @@ async function quickTheaterTest() {
       </section>
 
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
-        <h3 style={{ marginTop: 0 }}>圖片諮詢（自動用 Theater API 產圖）：</h3>
+        <h3 style={{ marginTop: 0 }}>圖片諮詢：</h3>
 
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20 }}>
           <div style={{ flex: '1 1 0%' }}>
@@ -262,7 +231,7 @@ async function quickTheaterTest() {
             </div>
 
             <p style={{ marginTop: 8, fontSize: 13, color: '#666' }}>
-              上傳自己照片可打造你與寵物/植物的互動照。後端會<strong>強制</strong>：人不說話、左下角、主角高度的 1/6。
+              上傳寵物/植物與本人照片，系統會以你的主圖為基底合成：**人左下角、主角高度 1/6、人不說話**；主角會用幹話風獨白（PG-13）。
             </p>
 
             {preview && (
@@ -278,21 +247,20 @@ async function quickTheaterTest() {
               </div>
             )}
 
-<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-  <button onClick={handlePhotoConsult} disabled={imgLoading} style={{ padding: '10px 16px' }}>
-    {imgLoading ? '處理中…' : '送出照片諮詢'}
-  </button>
-  <button type="button" onClick={quickTheaterTest} style={{ padding: '10px 16px' }}>
-    直接生成劇場（測試）
-  </button>
-</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+              <button onClick={handlePhotoConsult} disabled={imgLoading} style={{ padding: '10px 16px' }}>
+                {imgLoading ? '處理中…' : '送出照片諮詢'}
+              </button>
+              <button type="button" onClick={quickTheaterTest} disabled={testing} style={{ padding: '10px 16px' }}>
+                {testing ? '生成中…' : '直接生成劇場（測試）'}
+              </button>
+            </div>
 
-{theaterError && (
-  <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 13 }}>
-    Theater 錯誤：{theaterError}
-  </div>
-)}
-
+            {!!theaterError && (
+              <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 13 }}>
+                Theater 錯誤：{theaterError}
+              </div>
+            )}
 
             {/* 寵物結果 */}
             {petResult && (
@@ -341,7 +309,7 @@ async function quickTheaterTest() {
               </div>
             )}
 
-            {/* 內心小劇場（API 回傳） */}
+            {/* 內心小劇場 */}
             {theaterUrl && (
               <div style={{ marginTop: 16 }}>
                 <strong>🎭 內心小劇場</strong>
@@ -368,7 +336,7 @@ async function quickTheaterTest() {
               style={{ width: '100%', borderRadius: 8, border: '1px solid #ccc' }}
             />
             <p style={{ fontSize: 12, textAlign: 'center', color: '#666', marginTop: 6 }}>
-              小人國示意圖（API 強制：人不說話、左下角、1/6）
+              真人左下角、主體 1/6、只有主角說話（幹話風）。
             </p>
           </div>
         </div>
