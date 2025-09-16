@@ -1,4 +1,3 @@
-// app/api/theater/route.js
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
@@ -6,34 +5,84 @@ export const runtime = "nodejs";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// --------- 小工具（不依賴 zod） ----------
+/** —— 台灣口吻幹話詞庫（PG-13） —— */
+const QUIPS = {
+  cat: [
+    "別吵，我在耍廢。",
+    "先奉上罐頭，才有下一步。",
+    "沒事不要一直摸，我會掉漆。",
+    "你很吵，冷靜一點啦。",
+    "我今天只想躺著耍帥。",
+    "要抱？先填申請表。",
+    "給我小魚乾，我再考慮要不要理你。",
+    "我忙著當網美，不要干擾。",
+  ],
+  dog: [
+    "散步快點啦，我腳抖了！",
+    "先給零食，再給愛。",
+    "你回來囉～我假裝不在意一下。",
+    "我很乖，但我更想吃餅乾。",
+    "抱我啦，不然我一直看你。",
+    "我可以坐下，也可以坐你腿上。",
+    "給我拍拍，我立刻變好狗狗。",
+    "出門沒帶我？欠揍喔。",
+  ],
+  plant: [
+    "今天只喝一點水，別淹死我。",
+    "太陽多給一點啦，不然我臉色很差。",
+    "我在發芽，你不要在旁邊碎念。",
+    "葉子捲不是生氣，是在裝文青。",
+    "我很綠，但不綠茶。",
+    "別亂移我，我在追光線。",
+    "先澆水，再談心。",
+    "風吹來就是我的演唱會。",
+  ],
+  any: [
+    "我先可愛，你隨意。",
+    "別急，我在更新毛髮版本。",
+    "有事丟零食，沒事別煩我。",
+    "先尊重我的午睡時間。",
+    "我忙著當主角，不方便接客。",
+    "要合照？先問我經紀人。",
+    "別打擾，正在充電模式。",
+    "我就是今天的卡司。",
+  ],
+};
+
+function pickQuip(species, fallback = "我先可愛，你隨意。") {
+  const list = [...(QUIPS[species] || []), ...QUIPS.any];
+  return list[Math.floor(Math.random() * list.length)] || fallback;
+}
+
+// 工具
 function ensureEnum(val, list, fb) { return list.includes(val) ? val : fb; }
 function S(v, fb = "") { return typeof v === "string" ? v : fb; }
 function B(v, fb = true) { return typeof v === "boolean" ? v : fb; }
 function stripDataURL(u) { return typeof u === "string" && u.startsWith("data:") ? "" : u; }
 function sanitizeLine(s, n = 80) { return S(s).replace(/\s+/g, " ").trim().slice(0, n); }
 
-// 極短幹話備用（PG-13、無辱罵）
-const QUIPS = [
-  "別靠近我！我不認識你！",
-  "先別摸，我還在評估你的人生價值。",
-  "今天我只對零食開放友善模式。",
-  "請帶著誠意和小魚乾再來談。",
-  "我有在忙，忙著可愛。",
-  "先排隊，謝謝配合。",
-  "別急，我的親密度系統還在冷卻。",
-];
-
-// 把一段普通句子「幹話化」
-function punchUpOneLiner(s) {
-  const base = sanitizeLine(s, 50);
-  if (!base) return QUIPS[Math.floor(Math.random() * QUIPS.length)];
-  // 小幅度加料（避免太長、避免髒話）
-  const tails = [" 懂？", " OK？", " 先謝謝。", " 我先說到這。", " 有意見私訊我經紀人。"];
-  return (base + tails[Math.floor(Math.random() * tails.length)]).slice(0, 60);
+// 自動斷行（每 chunkSize 字換行）
+function wrapText(str, chunkSize = 12) {
+  const clean = sanitizeLine(str, 60);
+  if (!clean) return "";
+  const chunks = [];
+  for (let i = 0; i < clean.length; i += chunkSize) {
+    chunks.push(clean.slice(i, i + chunkSize));
+  }
+  return chunks.join("\n");
 }
 
-// 解析 body（前端會丟 subjectImageData / humanImageData 為 dataURL）
+// dataURL → File
+async function dataURLtoFile(dataURL, filename) {
+  const base64 = dataURL.split(",")[1];
+  if (!base64) return null;
+  const buf = Buffer.from(base64, "base64");
+  const { toFile } = await import("openai/uploads");
+  const mime = dataURL.includes("png") ? "image/png" : "image/jpeg";
+  return toFile(buf, filename, { type: mime });
+}
+
+// parse body
 function parseBody(body) {
   const subjectType = ensureEnum(body?.subjectType, ["pet", "plant"], "pet");
   const species = S(body?.species, subjectType === "plant" ? "plant" : "pet");
@@ -42,10 +91,7 @@ function parseBody(body) {
     ["cute-cartoon", "storybook", "studio-portrait", "painted", "comic", "photo"],
     "photo"
   );
-  const dialogue = {
-    subject: S(body?.dialogue?.subject, ""),
-    human: ""  // 永遠清空
-  };
+  const dialogue = { subject: S(body?.dialogue?.subject, ""), human: "" };
   const sceneContext = {
     mood: ensureEnum(body?.sceneContext?.mood, ["warm", "adventure", "serene", "playful", "mystery"], "warm"),
     environmentHint: S(body?.sceneContext?.environmentHint, ""),
@@ -54,43 +100,39 @@ function parseBody(body) {
   const composition = { humanScale: 1/6, humanPosition: "bottom-left", enforceRules: true };
 
   return {
-    // 文字欄位
     subjectType, species, stylePreset, dialogue, sceneContext, composition,
-    // 參考URL（若前端給短網址可以加入；我們仍會過濾 dataURL）
     subjectImageUrl: stripDataURL(S(body?.subjectImageUrl, "")),
     humanImageUrl: stripDataURL(S(body?.humanImageUrl, "")),
-    // 真正用於 image-to-image 的 dataURL（只傳後端，不進 prompt）
     subjectImageData: S(body?.subjectImageData, ""),
     humanImageData: S(body?.humanImageData, ""),
   };
 }
 
-// 把 dataURL 轉成 File（OpenAI SDK v4 輔助）
-async function dataURLtoFile(dataURL, filename) {
-  const base64 = dataURL.split(",")[1];
-  if (!base64) return null;
-  const buf = Buffer.from(base64, "base64");
-  const { toFile } = await import("openai/uploads");
-  // 猜 MIME：常見 image/jpeg / image/png
-  const mime = dataURL.includes("png") ? "image/png" : "image/jpeg";
-  return toFile(buf, filename, { type: mime });
-}
-
+// ---- API 主體 ----
 export async function POST(req) {
   try {
     const body = await req.json();
     const p = parseBody(body);
 
-    // 獨白（幹話風、PG-13）
+    // 選擇詞庫種類
+    const quipSpecies =
+      p.subjectType === "plant"
+        ? "plant"
+        : /^(cat|cats|kitten|kittens)$/i.test(p.species)
+        ? "cat"
+        : "dog";
+
+    // 台詞：有給 → 清理後斷行；沒給 → 隨機挑
+    const userLine = S(p.dialogue.subject, "").trim();
     const bubbleText = p.sceneContext.showBubbles
-      ? punchUpOneLiner(p.dialogue.subject)
+      ? (userLine ? wrapText(userLine, 12) : wrapText(pickQuip(quipSpecies), 12))
       : "";
 
     const forbidCats =
       p.subjectType === "plant" ||
       (p.subjectType === "pet" && !/^(cat|cats|kitten|kittens)$/i.test(p.species));
 
-    // 構建提示（不含 dataURL）
+    // prompt
     let prompt = buildPromptText({
       ...p,
       dialogue: { subject: bubbleText, human: "" },
@@ -98,39 +140,34 @@ export async function POST(req) {
     });
 
     if (prompt.length > 30000) {
-      // 保險刪掉參考行
       prompt = prompt.replace(/^Subject reference:.*$/gm, "")
                      .replace(/^Human reference:.*$/gm, "");
     }
     if (prompt.length > 32000) prompt = prompt.slice(0, 31900);
 
-    const useEdit = !!p.subjectImageData; // 有主圖就走 edits
+    const useEdit = !!p.subjectImageData;
     let result;
 
     if (useEdit) {
-      // --- Image-to-Image（以用戶主圖為 base），可帶入人像參考 ---
       const baseFile = await dataURLtoFile(p.subjectImageData, "subject.jpg");
       if (!baseFile) throw new Error("主圖 dataURL 解析失敗");
 
-      // 可選：人像參考（第二張）
       let extraImages = [];
       if (p.humanImageData) {
         const humanFile = await dataURLtoFile(p.humanImageData, "human.jpg");
         if (humanFile) extraImages.push(humanFile);
       }
 
-      // 嘗試帶兩張（base + human 參考）；若不被允許再退回只帶 base
       try {
         result = await client.images.edits({
           model: "gpt-image-1",
           image: baseFile,
-          // @ts-ignore（SDK 允許陣列 image[]；如不支援會丟 400）
-          additional_image: extraImages, // 有些版本參數名為 "image[]"/"images"，這裡作為 best-effort
+          // 某些版本允許多圖參考
+          additional_image: extraImages,
           prompt,
           size: "1024x1024",
         });
       } catch (e) {
-        // 版本不支援多圖 → 改用只有 base 的 edits
         result = await client.images.edits({
           model: "gpt-image-1",
           image: baseFile,
@@ -139,7 +176,6 @@ export async function POST(req) {
         });
       }
     } else {
-      // --- 純文字生成（沒有主圖時的保底） ---
       result = await client.images.generate({
         model: "gpt-image-1",
         prompt,
@@ -159,7 +195,7 @@ export async function POST(req) {
   }
 }
 
-// 構建提示文字（不含任何 dataURL）
+// prompt builder
 function buildPromptText(input) {
   const {
     subjectType, species, stylePreset, dialogue, sceneContext, composition,
@@ -178,11 +214,9 @@ function buildPromptText(input) {
     `Subject: ${subjectType} (${species}).`,
     subjectImageUrl ? `Subject reference: ${subjectImageUrl}` : "",
     humanImageUrl ? `Human reference: ${humanImageUrl}` : "",
-    // 幹話氣泡（只給主角）
     dialogue?.subject
-      ? `Speech bubble (subject only, Traditional Chinese, irreverent PG-13, snarky like South Park PC Principal but safe, no slurs): “${sanitizeLine(dialogue.subject, 70)}”`
+      ? `Speech bubble (subject only, Traditional Chinese, snarky PG-13, humorous, Taiwan internet slang style, no slurs): “${dialogue.subject}”`
       : "No speech bubble if subject dialogue is empty.",
-    // 場景與構圖規範
     `Mood: ${sceneContext?.mood || "warm"}.`,
     sceneContext?.environmentHint ? `Environment hint: ${sanitizeLine(sceneContext.environmentHint, 80)}` : "Environment: cozy, softly lit background.",
     style,
