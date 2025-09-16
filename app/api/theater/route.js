@@ -1,91 +1,192 @@
-// app/api/theater/route.js
-export const runtime = "nodejs";
+// app/api/theater/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 
-import { NextResponse } from "next/server";
-import OpenAI from "openai";
+/**
+ * Scene payload schema
+ * - 強制規範：
+ *   1) 只有 subject(寵物/植物) 有台詞；human 永遠不說話（後端會過濾）。
+ *   2) human 縮放為 subject 高度的 1/6（約 0.1667 倍），定位左下角。
+ *   3) 若未提供 human 圖，則不放人像層。
+ *   4) 任何 "cat" 類型只在 subjectType === 'pet' 且 species === 'cat' 才允許。
+ */
+const SceneSchema = z.object({
+  subjectType: z.enum(["pet", "plant"]),
+  species: z.string().min(1, "species is required"),
+  subjectImageUrl: z.string().url().optional(), // 可選：若用分類器產提示詞，不一定需要原圖
+  humanImageUrl: z.string().url().optional(),
+  stylePreset: z
+    .enum([
+      "cute-cartoon",
+      "storybook",
+      "studio-portrait",
+      "painted",
+      "comic",
+      "photo"
+    ])
+    .default("cute-cartoon"),
+  dialogue: z.object({
+    subject: z
+      .string()
+      .max(140, "subject dialogue is too long")
+      .default(""),
+    human: z.string().optional() // 會被忽略/清空
+  }),
+  sceneContext: z
+    .object({
+      mood: z
+        .enum(["warm", "adventure", "serene", "playful", "mystery"])
+        .default("warm"),
+      environmentHint: z.string().default(""),
+      // 是否要顯示對話框（subject 對話框）；人類永遠不顯示
+      showBubbles: z.boolean().default(true)
+    })
+    .default({ mood: "warm", environmentHint: "", showBubbles: true }),
+  // 進階控制：若提供仍會被後端覆蓋
+  composition: z
+    .object({
+      humanScale: z.number().optional(), // 將被覆蓋為 1/6
+      humanPosition: z
+        .enum(["bottom-left", "bottom-right", "top-left", "top-right"])
+        .optional(), // 將被覆蓋為 bottom-left
+      enforceRules: z.boolean().default(true)
+    })
+    .default({ enforceRules: true })
+});
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+type ScenePayload = z.infer<typeof SceneSchema>;
 
-// 把 dataURL 轉為 {name, data:Buffer} 給 SDK 上傳
-function dataURLtoFile(dataURL, filename = "file.png") {
-  const [meta, b64] = (dataURL || "").split(",");
-  if (!meta?.startsWith("data:image/") || !b64) return null;
-  const buf = Buffer.from(b64, "base64");
-  return { name: filename, data: buf };
-}
-
-export async function POST(req) {
+export async function POST(req: NextRequest) {
   try {
-    const { sceneData, humanData, bubbleText, lang = "zh", species = "pet" } =
-      await req.json();
+    const json = await req.json();
+    const parsed = SceneSchema.parse(json) as ScenePayload;
 
-    if (!sceneData) {
-      return NextResponse.json({ error: "Missing sceneData" }, { status: 400 });
-    }
+    // ---- 規範強制：人類台詞清空、定位與比例固定 ----
+    const safePayload: ScenePayload = {
+      ...parsed,
+      dialogue: {
+        subject: parsed.dialogue.subject ?? "",
+        human: "" // 永遠不讓人類講話
+      },
+      composition: {
+        ...parsed.composition,
+        humanScale: 1 / 6, // ~0.1667
+        humanPosition: "bottom-left",
+        enforceRules: true
+      }
+    };
 
-    const sceneFile = dataURLtoFile(sceneData, "scene.png");
-    const humanFile = humanData ? dataURLtoFile(humanData, "human.png") : null;
-    if (!sceneFile) {
-      return NextResponse.json({ error: "Invalid sceneData" }, { status: 400 });
-    }
+    // 額外：若 species 不允許「貓」但 subjectType=plant，避免誤入貓元素
+    const forbidCats =
+      safePayload.subjectType === "plant" ||
+      (safePayload.subjectType === "pet" &&
+        !/^(cat|cats|kitten|kittens)$/i.test(safePayload.species ?? ""));
 
-    // Guideline（你定義的小人國規則）
-    const guideline_zh = `
-合成要求：
-- 將人像小人國化，身高約為寵物/植物高度的 1/6。
-- 臉部約 80% 相似原照，可更帥/更美，但不可走鐘、不可換人。
-- 穿原始服裝（不要奇裝異服），與場景光影一致。
-- 姿勢、表情要呼應寵物/植物當下心情（緊張→後退或半蹲安撫；慵懶→放鬆坐/蹲）。
-- 視線必須看向寵物/植物。
-- 對話泡泡只有寵物/植物一方，**人沒有台詞**。
-- 在畫面中加入漫畫風黑邊泡泡，泡泡內文字使用繁體中文，內容：${bubbleText || "我今天心情很好～"}。
-- 構圖自然不突兀；膚色、陰影、透視要合理。
-`;
-
-    const guideline_en = `
-Compose these two images:
-- Miniaturize the human to ~1/6 of the pet/plant's height.
-- Face ~80% similar to the provided human photo, allow subtle beautification only.
-- Keep the person's original clothes; match lighting to the scene.
-- Pose/expression must respond to pet/plant mood (anxious→step back/crouch; relaxed→sit/chill).
-- Person must look at the pet/plant.
-- Only the pet/plant has a speech bubble (comic style black-outline). The person has NO text bubble.
-- Add a comic-style speech bubble with the following text: ${bubbleText || "Feeling great today!"} (use Traditional Chinese if the UI is Chinese).
-- Make shadows/perspective consistent and natural.
-`;
-
-    const prompt =
-      lang === "zh"
-        ? `請將下列兩張圖合成：背景為寵物/植物場景、人像小人國化。${guideline_zh}`
-        : `Please compose the two images: scene (pet/plant) + human as miniature. ${guideline_en}`;
-
-    // 使用 edits，把 scene/human 一起送進去做合成
-    const images = [sceneFile, ...(humanFile ? [humanFile] : [])];
-    const res = await openai.images.edits({
-      model: "gpt-image-1",
-      prompt,
-      size: "1024x1024",
-      // 直接交給模型合成（不使用 mask）；它會根據 prompt 自行融合兩張圖
-      image: images,
-      // 為避免重口味風格，降低噪點
-      n: 1,
-      // 注意：不要加上 background removal；交給 prompt 做
+    const prompt = buildPrompt({
+      ...safePayload,
+      forbidCats
     });
 
-    const b64 = res?.data?.[0]?.b64_json;
-    if (!b64) {
-      return NextResponse.json(
-        { error: "Image generation failed" },
-        { status: 500 }
+    // 這裡預留供應商串接點：
+    // 你可以改成呼叫你現有的圖生圖/合成服務（如自家的 compositor、OpenAI Images、Stability、Replicate、自架 Diffusers 等）
+    // 下方提供一個「假回傳」fallback，方便你本地先通到前端流程。
+    const provider = process.env.THEATER_IMAGE_PROVIDER ?? "mock";
+    let imageUrl = "";
+    let meta: any = { provider, prompt };
+
+    if (provider === "mock") {
+      // 假圖：以 data URL 不便；改回傳一張佔位圖 + 將 prompt 一併回傳方便 debug
+      imageUrl = `https://placehold.co/1024x1024/png?text=Theater+Preview`;
+    } else {
+      // === 範例：你可在此改成實際供應商 ===
+      // imageUrl = await callYourImageProvider({ prompt, safePayload });
+      // meta.providerResponse = ...
+      throw new Error(
+        "Please implement your image provider or set THEATER_IMAGE_PROVIDER=mock for placeholder."
       );
     }
-    const dataURL = `data:image/png;base64,${b64}`;
-    return NextResponse.json({ image: dataURL });
-  } catch (e) {
-    console.error(e);
+
     return NextResponse.json(
-      { error: "Internal error", details: String(e?.message || e) },
-      { status: 500 }
+      {
+        ok: true,
+        imageUrl,
+        prompt, // 便於你檢查是否符合：只有 subject 說話、人左下角 1/6 等
+        meta
+      },
+      { status: 200 }
     );
+  } catch (err: any) {
+    console.error("THEATER_ROUTE_ERROR:", err);
+    const message = err?.message ?? "Unknown error";
+    return NextResponse.json({ ok: false, error: message }, { status: 400 });
   }
+}
+
+function buildPrompt(input: ScenePayload & { forbidCats: boolean }) {
+  const {
+    subjectType,
+    species,
+    subjectImageUrl,
+    humanImageUrl,
+    stylePreset,
+    dialogue,
+    sceneContext,
+    composition,
+    forbidCats
+  } = input;
+
+  // 視覺規範（傳給你的合成服務或文生圖的 prompt）
+  const compositionRules = [
+    "Scene: single-frame composition for social sharing.",
+    `Human figure: include only if humanImageUrl is provided; scale to EXACTLY ~16.7% of the ${subjectType}'s height; place at bottom-left; human has NO speech bubble; human facial expression gentle and neutral.`,
+    `Primary subject: the ${subjectType} (${species}) is the hero; ensure clear visibility and central prominence.`,
+    sceneContext.environmentHint
+      ? `Environment hint: ${sceneContext.environmentHint}`
+      : "Environment: cozy, softly lit, clean background with depth.",
+    `Mood: ${sceneContext.mood}.`,
+    stylePreset === "photo"
+      ? "Style: realistic photography, shallow depth-of-field."
+      : stylePreset === "storybook"
+      ? "Style: warm storybook illustration, soft edges, watercolor-like textures."
+      : stylePreset === "painted"
+      ? "Style: painterly, visible brush strokes, soft color palette."
+      : stylePreset === "comic"
+      ? "Style: comic panel, crisp lines and halftone shading."
+      : "Style: cute, rounded shapes, gentle lighting, subtle textures.",
+    "Aspect: 1:1 square, 1024x1024 target.",
+    "Color: balanced, avoid oversaturation.",
+    "Typography/Overlays: Reserve space for one speech bubble near the subject if showBubbles=true."
+  ];
+
+  const hardConstraints = [
+    "HARD RULES:",
+    "- Only the PET/PLANT may speak. The human must be silent.",
+    "- If a human is present, position at bottom-left and keep scale at 1/6 of subject height.",
+    "- Do not place any speech bubble for the human under any circumstance.",
+    "- Keep composition clean; avoid clutter.",
+    forbidCats
+      ? "- Absolutely DO NOT introduce cats/felines unless species is explicitly cat."
+      : "- Cat elements allowed only if species is cat."
+  ];
+
+  const bubble =
+    sceneContext.showBubbles && dialogue.subject
+      ? `Speech bubble (subject only): “${sanitize(dialogue.subject)}”`
+      : "No speech bubble or empty bubble is acceptable.";
+
+  const refImages: string[] = [];
+  if (subjectImageUrl) refImages.push(`SubjectRef: ${subjectImageUrl}`);
+  if (humanImageUrl) refImages.push(`HumanRef: ${humanImageUrl}`);
+
+  return [
+    `Subject: ${subjectType} (${species})`,
+    ...refImages,
+    bubble,
+    ...compositionRules,
+    ...hardConstraints
+  ].join("\n");
+}
+
+function sanitize(s: string) {
+  return s.replace(/\n/g, " ").slice(0, 140);
 }
