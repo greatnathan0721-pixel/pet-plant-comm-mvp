@@ -98,6 +98,7 @@ export default function HomeClient2() {
         const result = raw.result || raw;
         setPlantResult(result);
       } else {
+        console.log('➡️ 呼叫 analyze2');
         const res = await fetch('/api/analyze2', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
