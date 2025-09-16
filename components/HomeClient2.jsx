@@ -212,6 +212,20 @@ export default function HomeClient2() {
                 <p style={{ whiteSpace: 'pre-line' }}>{petResult.state}</p>
               </div>
             )}
+            {/* 寵物：可能問題 / 建議步驟 */}
+{petResult && Array.isArray(petResult.issues) && petResult.issues.length > 0 && (
+  <>
+    <strong>可能問題</strong>
+    <ul>{petResult.issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+  </>
+)}
+{petResult && Array.isArray(petResult.suggestions) && petResult.suggestions.length > 0 && (
+  <>
+    <strong>建議步驟</strong>
+    <ol>{petResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ol>
+  </>
+)}
+
             {plantResult && !plantResult.error && (
               <div style={{ marginTop: 16 }}>
                 <strong>🌿 植物辨識</strong>
@@ -221,6 +235,19 @@ export default function HomeClient2() {
                 </ul>
               </div>
             )}
+            {plantResult && Array.isArray(plantResult.likely_issues) && plantResult.likely_issues.length > 0 && (
+  <>
+    <strong>可能問題</strong>
+    <ul>{plantResult.likely_issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+  </>
+)}
+{plantResult && Array.isArray(plantResult.care_steps) && plantResult.care_steps.length > 0 && (
+  <>
+    <strong>照護步驟</strong>
+    <ol>{plantResult.care_steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+  </>
+)}
+
 
             {/* 內心小劇場 */}
             {theaterUrl && (
