@@ -43,6 +43,44 @@ export default function HomeClient2() {
   const [debugPrompt, setDebugPrompt] = useState('');
   const [audioAdvice, setAudioAdvice] = useState('');
 
+  const [theaterError, setTheaterError] = useState('');
+
+// 直接打 /api/theater（繞過 analyze/identify）
+async function quickTheaterTest() {
+  setTheaterError('');
+  const file = fileRef.current?.files?.[0];
+  if (!file && !preview) { alert('請先選擇諮詢照片'); return; }
+
+  try {
+    const basePhoto = preview || await compressImageToDataURL(file, 720, 0.7);
+    const payload = {
+      subjectType: species === 'plant' ? 'plant' : 'pet',
+      species: species === 'plant' ? 'plant' : species,
+      subjectImageUrl: basePhoto,
+      humanImageUrl: humanPreview || '',
+      stylePreset: 'cute-cartoon',
+      dialogue: { subject: '今天我心情很好～', human: '' },
+      sceneContext: { mood: 'warm', environmentHint: '', showBubbles: true },
+      composition: { humanScale: 1/6, humanPosition: 'bottom-left', enforceRules: true }
+    };
+    const res = await fetch('/api/theater', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json();
+    console.log('[theater debug]', json);
+    if (!json.ok) throw new Error(json.error || 'Theater API 失敗');
+    setTheaterUrl(json.imageUrl);
+    setDebugPrompt(json.prompt || '');
+  } catch (e) {
+    console.error(e);
+    setTheaterError(String(e?.message || e));
+    alert(`❌ Theater 直連測試失敗：${e?.message || e}`);
+  }
+}
+
+  
   // 文字諮詢
   async function handleTextSubmit(e) {
     e.preventDefault();
@@ -240,11 +278,21 @@ export default function HomeClient2() {
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-              <button onClick={handlePhotoConsult} disabled={imgLoading} style={{ padding: '10px 16px' }}>
-                {imgLoading ? '處理中…' : '送出照片諮詢'}
-              </button>
-            </div>
+<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+  <button onClick={handlePhotoConsult} disabled={imgLoading} style={{ padding: '10px 16px' }}>
+    {imgLoading ? '處理中…' : '送出照片諮詢'}
+  </button>
+  <button type="button" onClick={quickTheaterTest} style={{ padding: '10px 16px' }}>
+    直接生成劇場（測試）
+  </button>
+</div>
+
+{theaterError && (
+  <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 13 }}>
+    Theater 錯誤：{theaterError}
+  </div>
+)}
+
 
             {/* 寵物結果 */}
             {petResult && (
