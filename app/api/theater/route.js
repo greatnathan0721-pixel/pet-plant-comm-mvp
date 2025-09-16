@@ -4,7 +4,7 @@ import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-/** ---- 輕量驗證工具（不用 zod） ---- */
+/** 輕量驗證（無 zod） */
 function ensureEnum(val, allowed, fallback) {
   return allowed.includes(val) ? val : fallback;
 }
@@ -17,30 +17,18 @@ function ensureBool(v, fallback = true) {
 function parseBody(body) {
   const subjectType = ensureEnum(body?.subjectType, ["pet", "plant"], "pet");
   const species = ensureString(body?.species, subjectType === "plant" ? "plant" : "pet");
-
   const stylePreset = ensureEnum(
     body?.stylePreset,
     ["cute-cartoon", "storybook", "studio-portrait", "painted", "comic", "photo"],
     "cute-cartoon"
   );
-
-  const dialogue = {
-    subject: ensureString(body?.dialogue?.subject, ""),
-    human: "" // 永遠清空人類台詞
-  };
-
+  const dialogue = { subject: ensureString(body?.dialogue?.subject, ""), human: "" };
   const sceneContext = {
     mood: ensureEnum(body?.sceneContext?.mood, ["warm", "adventure", "serene", "playful", "mystery"], "warm"),
     environmentHint: ensureString(body?.sceneContext?.environmentHint, ""),
-    showBubbles: ensureBool(body?.sceneContext?.showBubbles, true)
+    showBubbles: ensureBool(body?.sceneContext?.showBubbles, true),
   };
-
-  // composition 會被後端覆蓋：humanScale=1/6、humanPosition=bottom-left
-  const composition = {
-    humanScale: 1 / 6,
-    humanPosition: "bottom-left",
-    enforceRules: true
-  };
+  const composition = { humanScale: 1 / 6, humanPosition: "bottom-left", enforceRules: true };
 
   return {
     subjectType,
@@ -50,14 +38,11 @@ function parseBody(body) {
     stylePreset,
     dialogue,
     sceneContext,
-    composition
+    composition,
   };
 }
 
-/** ---- OpenAI Client ---- */
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req) {
   try {
@@ -66,28 +51,27 @@ export async function POST(req) {
 
     const forbidCats =
       safePayload.subjectType === "plant" ||
-      (safePayload.subjectType === "pet" &&
-        !/^(cat|cats|kitten|kittens)$/i.test(safePayload.species));
+      (safePayload.subjectType === "pet" && !/^(cat|cats|kitten|kittens)$/i.test(safePayload.species));
 
     const prompt = buildPrompt({ ...safePayload, forbidCats });
 
-    // 用 OpenAI 生成：直接回傳 dataURL（前端可直接顯示）
+    // ✅ 修正：移除 response_format
     const result = await client.images.generate({
       model: "gpt-image-1",
       prompt,
       size: "1024x1024",
-      response_format: "b64_json"
     });
 
+    // 優先用 URL；若有 b64_json 也能 fallback
+    const url = result?.data?.[0]?.url;
     const b64 = result?.data?.[0]?.b64_json;
-    if (!b64) throw new Error("OpenAI 回傳為空");
+    if (!url && !b64) throw new Error("OpenAI 回傳空的影像資料");
 
-    const imageUrl = `data:image/png;base64,${b64}`;
+    const imageUrl = url || `data:image/png;base64,${b64}`;
     return NextResponse.json({ ok: true, imageUrl, prompt }, { status: 200 });
   } catch (err) {
     console.error("THEATER_ROUTE_ERROR:", err);
-    const message = err?.message || "Unknown error";
-    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+    return NextResponse.json({ ok: false, error: err?.message || "Unknown error" }, { status: 400 });
   }
 }
 
@@ -100,7 +84,7 @@ function buildPrompt(input) {
     stylePreset,
     dialogue,
     sceneContext,
-    forbidCats
+    forbidCats,
   } = input;
 
   const compositionRules = [
@@ -121,7 +105,7 @@ function buildPrompt(input) {
       : stylePreset === "comic"
       ? "Style: comic panel with crisp lines."
       : "Style: cute cartoon, rounded shapes, gentle colors.",
-    "Aspect: 1:1 square, 1024x1024."
+    "Aspect: 1:1 square, 1024x1024.",
   ];
 
   const hardRules = [
@@ -131,7 +115,7 @@ function buildPrompt(input) {
     "- Never draw a speech bubble for the human.",
     forbidCats
       ? "- Do NOT add cats/felines unless species is explicitly 'cat'."
-      : "- Cat elements allowed only if species is 'cat'."
+      : "- Cat elements allowed only if species is 'cat'.",
   ];
 
   const bubble =
@@ -148,7 +132,7 @@ function buildPrompt(input) {
     ...refs,
     bubble,
     ...compositionRules,
-    ...hardRules
+    ...hardRules,
   ].join("\n");
 }
 
