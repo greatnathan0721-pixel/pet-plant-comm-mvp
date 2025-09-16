@@ -98,7 +98,7 @@ export default function HomeClient2() {
         const result = raw.result || raw;
         setPlantResult(result);
       } else {
-        const res = await fetch('/api/analyze', {
+        const res = await fetch('/api/analyze2', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ species, userText, imageData: dataURL, lang: 'zh' })
