@@ -1,27 +1,27 @@
 // app/api/analyze/route.js
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
 
 export const runtime = "nodejs";
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// 小工具
-const S = (v, fb="") => (typeof v === "string" ? v : fb);
-const ensureSpecies = (s) => (["cat","dog"].includes(s) ? s : "cat");
+const S = (v, fb = "") => (typeof v === "string" ? v : fb);
+const ensureSpecies = (s) => (["cat", "dog"].includes(s) ? s : "cat");
 
 export async function POST(req) {
   try {
     const body = await req.json();
     const species = ensureSpecies(S(body?.species, "cat"));
     const userText = S(body?.userText, "");
-    const imageData = S(body?.imageData, ""); // dataURL (jpeg/png)
+    const imageData = S(body?.imageData, ""); // dataURL
     const lang = S(body?.lang, "zh");
 
+    if (!process.env.OPENAI_API_KEY) {
+      return NextResponse.json({ error: "Missing OPENAI_API_KEY" }, { status: 500 });
+    }
     if (!imageData) {
       return NextResponse.json({ error: "缺少圖片 imageData" }, { status: 400 });
     }
 
-    const sys = [
+    const system = [
       "You are a helpful pet expert.",
       "Analyze the pet in the photo and the user's note.",
       "Return a compact JSON object with fields:",
@@ -35,11 +35,11 @@ export async function POST(req) {
       userText ? `使用者補充：${userText}` : ""
     ].filter(Boolean).join("\n");
 
-    const completion = await client.chat.completions.create({
+    const payload = {
       model: "gpt-4o-mini",
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: sys },
+        { role: "system", content: system },
         {
           role: "user",
           content: [
@@ -48,18 +48,32 @@ export async function POST(req) {
           ]
         }
       ],
-      temperature: 0.5,
+      temperature: 0.5
+    };
+
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
     });
 
-    const raw = completion.choices?.[0]?.message?.content || "{}";
+    if (!r.ok) {
+      const errText = await r.text().catch(() => "");
+      return NextResponse.json({ error: "OpenAI error", details: errText }, { status: 502 });
+    }
+
+    const j = await r.json();
+    const raw = j?.choices?.[0]?.message?.content || "{}";
     let data;
     try { data = JSON.parse(raw); } catch { data = {}; }
 
-    // 兜預設，避免前端爆
     const out = {
       state: S(data.state, "目前看起來精神穩定，建議持續觀察作息與食慾。"),
       issues: Array.isArray(data.issues) ? data.issues : [],
-      suggestions: Array.isArray(data.suggestions) ? data.suggestions : ["維持規律飲食與飲水。","觀察排便與活動量。"],
+      suggestions: Array.isArray(data.suggestions) ? data.suggestions : ["維持規律飲食與飲水。", "觀察排便與活動量。"],
       fun_one_liner: S(data.fun_one_liner, species === "cat" ? "別吵，我在耍廢。" : "散步快點啦，我腳抖了！"),
     };
 
