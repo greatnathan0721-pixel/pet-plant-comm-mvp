@@ -209,6 +209,43 @@ export default function HomeClient2() {
       <section style={{ marginTop: 20, padding: 16, border: '1px solid #eee', borderRadius: 10 }}>
         <h3 style={{ marginTop: 0 }}>圖片諮詢（自動用 Theater API 產圖）：</h3>
 
+        // 放在 HomeClient2 組件裡（其他 hooks 旁邊）
+const [theaterError, setTheaterError] = useState('');
+
+// 直接打 /api/theater（不走 analyze/identify）
+async function quickTheaterTest() {
+  setTheaterError('');
+  const file = fileRef.current?.files?.[0];
+  if (!file && !preview) { alert('請先選擇諮詢照片'); return; }
+
+  try {
+    const basePhoto = preview || await compressImageToDataURL(file, 720, 0.7);
+    const payload = {
+      subjectType: species === 'plant' ? 'plant' : 'pet',
+      species: species === 'plant' ? 'monstera' : (species || 'cat'),
+      subjectImageUrl: basePhoto,
+      humanImageUrl: humanPreview || '',
+      stylePreset: 'cute-cartoon',
+      dialogue: { subject: '今天我心情很好～', human: '' },
+      sceneContext: { mood: 'warm', environmentHint: '', showBubbles: true },
+      composition: { humanScale: 1/6, humanPosition: 'bottom-left', enforceRules: true }
+    };
+    const res = await fetch('/api/theater', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json();
+    console.log('[theater debug]', json);   // <— 打在瀏覽器 Console
+    if (!json.ok) throw new Error(json.error || 'Theater API 失敗');
+    setTheaterUrl(json.imageUrl);
+    setDebugPrompt(json.prompt || '');
+  } catch (e) {
+    console.error(e);
+    setTheaterError(String(e?.message || e));
+    alert(`❌ Theater 直連測試失敗：${e?.message || e}`);
+  }
+}
+
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20 }}>
           <div style={{ flex: '1 1 0%' }}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
