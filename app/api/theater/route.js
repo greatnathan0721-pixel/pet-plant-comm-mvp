@@ -42,6 +42,11 @@ function parseBody(body) {
   };
 }
 
+/** 移除 dataURL（超長 base64），避免塞進 prompt */
+function stripDataURL(u) {
+  return typeof u === "string" && u.startsWith("data:") ? "" : u;
+}
+
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req) {
@@ -49,22 +54,37 @@ export async function POST(req) {
     const body = await req.json();
     const safePayload = parseBody(body);
 
+    // 👉 這裡把 dataURL 清掉，不放進 prompt
+    const promptInput = {
+      ...safePayload,
+      subjectImageUrl: stripDataURL(safePayload.subjectImageUrl),
+      humanImageUrl: stripDataURL(safePayload.humanImageUrl),
+    };
+
     const forbidCats =
-      safePayload.subjectType === "plant" ||
-      (safePayload.subjectType === "pet" && !/^(cat|cats|kitten|kittens)$/i.test(safePayload.species));
+      promptInput.subjectType === "plant" ||
+      (promptInput.subjectType === "pet" && !/^(cat|cats|kitten|kittens)$/i.test(promptInput.species));
 
-    const prompt = buildPrompt({ ...safePayload, forbidCats });
+    let prompt = buildPrompt({ ...promptInput, forbidCats });
 
-    // ✅ 修正：移除 response_format
+    // 額外保險：若還是超長，砍掉參考行（理論上這時已經不會超了）
+    if (prompt.length > 30000) {
+      prompt = prompt.replace(/^Subject reference:.*$/gm, "").replace(/^Human reference:.*$/gm, "");
+    }
+    if (prompt.length > 32000) {
+      // 最後保險：硬切（幾乎不會觸發）
+      prompt = prompt.slice(0, 31900);
+    }
+
+    // OpenAI 圖像生成（不傳 response_format）
     const result = await client.images.generate({
       model: "gpt-image-1",
       prompt,
       size: "1024x1024",
     });
 
-    // 優先用 URL；若有 b64_json 也能 fallback
     const url = result?.data?.[0]?.url;
-    const b64 = result?.data?.[0]?.b64_json;
+    const b64 = result?.data?.[0]?.b64_json; // 某些回應可能會帶
     if (!url && !b64) throw new Error("OpenAI 回傳空的影像資料");
 
     const imageUrl = url || `data:image/png;base64,${b64}`;
@@ -124,16 +144,21 @@ function buildPrompt(input) {
       : "No speech bubble if subject dialogue is empty.";
 
   const refs = [];
+  // 只在不是 dataURL 的情況下才加入參考 URL（短）
   if (subjectImageUrl) refs.push(`Subject reference: ${subjectImageUrl}`);
   if (humanImageUrl) refs.push(`Human reference: ${humanImageUrl}`);
 
-  return [
+  let text = [
     `Subject: ${subjectType} (${species})`,
     ...refs,
     bubble,
     ...compositionRules,
     ...hardRules,
   ].join("\n");
+
+  // 終極保險（通常用不到）
+  if (text.length > 32000) text = text.slice(0, 31900);
+  return text;
 }
 
 function sanitize(s) {
