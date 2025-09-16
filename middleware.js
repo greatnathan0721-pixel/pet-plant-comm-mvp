@@ -1,17 +1,17 @@
-// middleware.ts
+// middleware.js
 import { NextResponse } from 'next/server';
 
 export const config = { matcher: ['/api/:path*'] };
 
-export default async function middleware(req: Request) {
-  // ✅ 設定 DISABLE_RATE_LIMIT=1 時，直接放行
+export default function middleware(req) {
+  // 設定 DISABLE_RATE_LIMIT=1 時，直接放行（用來暫時關掉每日上限）
   if (process.env.DISABLE_RATE_LIMIT === '1') {
-    return NextResponse.next({
-      headers: { 'x-rate-limit-bypass': '1', 'cache-control': 'no-store' },
-    });
+    const res = NextResponse.next();
+    res.headers.set('x-rate-limit-bypass', '1');
+    res.headers.set('cache-control', 'no-store');
+    return res;
   }
 
-  // 你原本的免費次數/額度檢查（保留，但現在不會觸發）
-  // e.g. 讀 cookie/ip → 計數 → 超過就回 429
-  // return new NextResponse(JSON.stringify({ error: "已超過今日免費 5 次..." }), { status: 429 });
+  // TODO: 你的原本限流/免費次數檢查可以放在這裡
+  return NextResponse.next();
 }
