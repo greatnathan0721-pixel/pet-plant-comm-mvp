@@ -4,163 +4,201 @@ import OpenAI from "openai";
 
 export const runtime = "nodejs";
 
-/** 輕量驗證（無 zod） */
-function ensureEnum(val, allowed, fallback) {
-  return allowed.includes(val) ? val : fallback;
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// --------- 小工具（不依賴 zod） ----------
+function ensureEnum(val, list, fb) { return list.includes(val) ? val : fb; }
+function S(v, fb = "") { return typeof v === "string" ? v : fb; }
+function B(v, fb = true) { return typeof v === "boolean" ? v : fb; }
+function stripDataURL(u) { return typeof u === "string" && u.startsWith("data:") ? "" : u; }
+function sanitizeLine(s, n = 80) { return S(s).replace(/\s+/g, " ").trim().slice(0, n); }
+
+// 極短幹話備用（PG-13、無辱罵）
+const QUIPS = [
+  "別靠近我！我不認識你！",
+  "先別摸，我還在評估你的人生價值。",
+  "今天我只對零食開放友善模式。",
+  "請帶著誠意和小魚乾再來談。",
+  "我有在忙，忙著可愛。",
+  "先排隊，謝謝配合。",
+  "別急，我的親密度系統還在冷卻。",
+];
+
+// 把一段普通句子「幹話化」
+function punchUpOneLiner(s) {
+  const base = sanitizeLine(s, 50);
+  if (!base) return QUIPS[Math.floor(Math.random() * QUIPS.length)];
+  // 小幅度加料（避免太長、避免髒話）
+  const tails = [" 懂？", " OK？", " 先謝謝。", " 我先說到這。", " 有意見私訊我經紀人。"];
+  return (base + tails[Math.floor(Math.random() * tails.length)]).slice(0, 60);
 }
-function ensureString(v, fallback = "") {
-  return typeof v === "string" ? v : fallback;
-}
-function ensureBool(v, fallback = true) {
-  return typeof v === "boolean" ? v : fallback;
-}
+
+// 解析 body（前端會丟 subjectImageData / humanImageData 為 dataURL）
 function parseBody(body) {
   const subjectType = ensureEnum(body?.subjectType, ["pet", "plant"], "pet");
-  const species = ensureString(body?.species, subjectType === "plant" ? "plant" : "pet");
+  const species = S(body?.species, subjectType === "plant" ? "plant" : "pet");
   const stylePreset = ensureEnum(
     body?.stylePreset,
     ["cute-cartoon", "storybook", "studio-portrait", "painted", "comic", "photo"],
-    "cute-cartoon"
+    "photo"
   );
-  const dialogue = { subject: ensureString(body?.dialogue?.subject, ""), human: "" };
+  const dialogue = {
+    subject: S(body?.dialogue?.subject, ""),
+    human: ""  // 永遠清空
+  };
   const sceneContext = {
     mood: ensureEnum(body?.sceneContext?.mood, ["warm", "adventure", "serene", "playful", "mystery"], "warm"),
-    environmentHint: ensureString(body?.sceneContext?.environmentHint, ""),
-    showBubbles: ensureBool(body?.sceneContext?.showBubbles, true),
+    environmentHint: S(body?.sceneContext?.environmentHint, ""),
+    showBubbles: B(body?.sceneContext?.showBubbles, true),
   };
-  const composition = { humanScale: 1 / 6, humanPosition: "bottom-left", enforceRules: true };
+  const composition = { humanScale: 1/6, humanPosition: "bottom-left", enforceRules: true };
 
   return {
-    subjectType,
-    species,
-    subjectImageUrl: ensureString(body?.subjectImageUrl, ""),
-    humanImageUrl: ensureString(body?.humanImageUrl, ""),
-    stylePreset,
-    dialogue,
-    sceneContext,
-    composition,
+    // 文字欄位
+    subjectType, species, stylePreset, dialogue, sceneContext, composition,
+    // 參考URL（若前端給短網址可以加入；我們仍會過濾 dataURL）
+    subjectImageUrl: stripDataURL(S(body?.subjectImageUrl, "")),
+    humanImageUrl: stripDataURL(S(body?.humanImageUrl, "")),
+    // 真正用於 image-to-image 的 dataURL（只傳後端，不進 prompt）
+    subjectImageData: S(body?.subjectImageData, ""),
+    humanImageData: S(body?.humanImageData, ""),
   };
 }
 
-/** 移除 dataURL（超長 base64），避免塞進 prompt */
-function stripDataURL(u) {
-  return typeof u === "string" && u.startsWith("data:") ? "" : u;
+// 把 dataURL 轉成 File（OpenAI SDK v4 輔助）
+async function dataURLtoFile(dataURL, filename) {
+  const base64 = dataURL.split(",")[1];
+  if (!base64) return null;
+  const buf = Buffer.from(base64, "base64");
+  const { toFile } = await import("openai/uploads");
+  // 猜 MIME：常見 image/jpeg / image/png
+  const mime = dataURL.includes("png") ? "image/png" : "image/jpeg";
+  return toFile(buf, filename, { type: mime });
 }
-
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(req) {
   try {
     const body = await req.json();
-    const safePayload = parseBody(body);
+    const p = parseBody(body);
 
-    // 👉 這裡把 dataURL 清掉，不放進 prompt
-    const promptInput = {
-      ...safePayload,
-      subjectImageUrl: stripDataURL(safePayload.subjectImageUrl),
-      humanImageUrl: stripDataURL(safePayload.humanImageUrl),
-    };
+    // 獨白（幹話風、PG-13）
+    const bubbleText = p.sceneContext.showBubbles
+      ? punchUpOneLiner(p.dialogue.subject)
+      : "";
 
     const forbidCats =
-      promptInput.subjectType === "plant" ||
-      (promptInput.subjectType === "pet" && !/^(cat|cats|kitten|kittens)$/i.test(promptInput.species));
+      p.subjectType === "plant" ||
+      (p.subjectType === "pet" && !/^(cat|cats|kitten|kittens)$/i.test(p.species));
 
-    let prompt = buildPrompt({ ...promptInput, forbidCats });
-
-    // 額外保險：若還是超長，砍掉參考行（理論上這時已經不會超了）
-    if (prompt.length > 30000) {
-      prompt = prompt.replace(/^Subject reference:.*$/gm, "").replace(/^Human reference:.*$/gm, "");
-    }
-    if (prompt.length > 32000) {
-      // 最後保險：硬切（幾乎不會觸發）
-      prompt = prompt.slice(0, 31900);
-    }
-
-    // OpenAI 圖像生成（不傳 response_format）
-    const result = await client.images.generate({
-      model: "gpt-image-1",
-      prompt,
-      size: "1024x1024",
+    // 構建提示（不含 dataURL）
+    let prompt = buildPromptText({
+      ...p,
+      dialogue: { subject: bubbleText, human: "" },
+      forbidCats,
     });
 
+    if (prompt.length > 30000) {
+      // 保險刪掉參考行
+      prompt = prompt.replace(/^Subject reference:.*$/gm, "")
+                     .replace(/^Human reference:.*$/gm, "");
+    }
+    if (prompt.length > 32000) prompt = prompt.slice(0, 31900);
+
+    const useEdit = !!p.subjectImageData; // 有主圖就走 edits
+    let result;
+
+    if (useEdit) {
+      // --- Image-to-Image（以用戶主圖為 base），可帶入人像參考 ---
+      const baseFile = await dataURLtoFile(p.subjectImageData, "subject.jpg");
+      if (!baseFile) throw new Error("主圖 dataURL 解析失敗");
+
+      // 可選：人像參考（第二張）
+      let extraImages = [];
+      if (p.humanImageData) {
+        const humanFile = await dataURLtoFile(p.humanImageData, "human.jpg");
+        if (humanFile) extraImages.push(humanFile);
+      }
+
+      // 嘗試帶兩張（base + human 參考）；若不被允許再退回只帶 base
+      try {
+        result = await client.images.edits({
+          model: "gpt-image-1",
+          image: baseFile,
+          // @ts-ignore（SDK 允許陣列 image[]；如不支援會丟 400）
+          additional_image: extraImages, // 有些版本參數名為 "image[]"/"images"，這裡作為 best-effort
+          prompt,
+          size: "1024x1024",
+        });
+      } catch (e) {
+        // 版本不支援多圖 → 改用只有 base 的 edits
+        result = await client.images.edits({
+          model: "gpt-image-1",
+          image: baseFile,
+          prompt,
+          size: "1024x1024",
+        });
+      }
+    } else {
+      // --- 純文字生成（沒有主圖時的保底） ---
+      result = await client.images.generate({
+        model: "gpt-image-1",
+        prompt,
+        size: "1024x1024",
+      });
+    }
+
     const url = result?.data?.[0]?.url;
-    const b64 = result?.data?.[0]?.b64_json; // 某些回應可能會帶
+    const b64 = result?.data?.[0]?.b64_json;
     if (!url && !b64) throw new Error("OpenAI 回傳空的影像資料");
 
     const imageUrl = url || `data:image/png;base64,${b64}`;
-    return NextResponse.json({ ok: true, imageUrl, prompt }, { status: 200 });
+    return NextResponse.json({ ok: true, imageUrl, prompt, bubbleText }, { status: 200 });
   } catch (err) {
     console.error("THEATER_ROUTE_ERROR:", err);
     return NextResponse.json({ ok: false, error: err?.message || "Unknown error" }, { status: 400 });
   }
 }
 
-function buildPrompt(input) {
+// 構建提示文字（不含任何 dataURL）
+function buildPromptText(input) {
   const {
-    subjectType,
-    species,
-    subjectImageUrl,
-    humanImageUrl,
-    stylePreset,
-    dialogue,
-    sceneContext,
-    forbidCats,
+    subjectType, species, stylePreset, dialogue, sceneContext, composition,
+    subjectImageUrl, humanImageUrl, forbidCats,
   } = input;
 
-  const compositionRules = [
-    "Scene: single-frame for social sharing.",
-    "Primary subject must be central and prominent.",
-    "Human figure: include only if provided; scale exactly 1/6 of the subject height; place at bottom-left; human is silent.",
-    "Speech bubble: only for the pet/plant if dialogue is provided.",
-    `Mood: ${sceneContext.mood}.`,
-    sceneContext.environmentHint
-      ? `Environment hint: ${sceneContext.environmentHint}`
-      : "Environment: cozy, softly lit, clean background.",
-    stylePreset === "photo"
-      ? "Style: realistic photography, gentle light."
-      : stylePreset === "storybook"
-      ? "Style: warm storybook illustration, watercolor-like textures."
-      : stylePreset === "painted"
-      ? "Style: painterly illustration with visible brush strokes."
-      : stylePreset === "comic"
-      ? "Style: comic panel with crisp lines."
-      : "Style: cute cartoon, rounded shapes, gentle colors.",
-    "Aspect: 1:1 square, 1024x1024.",
-  ];
+  const style =
+    stylePreset === "photo"       ? "Style: realistic photography, cinematic light, shallow depth of field."
+  : stylePreset === "storybook"   ? "Style: warm storybook illustration, watercolor textures."
+  : stylePreset === "painted"     ? "Style: painterly illustration with brush strokes."
+  : stylePreset === "comic"       ? "Style: comic panel with crisp lines and halftones."
+  : stylePreset === "studio-portrait" ? "Style: studio portrait lighting, soft rim light."
+  : "Style: cute cartoon, rounded shapes, gentle palette.";
 
-  const hardRules = [
+  const lines = [
+    `Subject: ${subjectType} (${species}).`,
+    subjectImageUrl ? `Subject reference: ${subjectImageUrl}` : "",
+    humanImageUrl ? `Human reference: ${humanImageUrl}` : "",
+    // 幹話氣泡（只給主角）
+    dialogue?.subject
+      ? `Speech bubble (subject only, Traditional Chinese, irreverent PG-13, snarky like South Park PC Principal but safe, no slurs): “${sanitizeLine(dialogue.subject, 70)}”`
+      : "No speech bubble if subject dialogue is empty.",
+    // 場景與構圖規範
+    `Mood: ${sceneContext?.mood || "warm"}.`,
+    sceneContext?.environmentHint ? `Environment hint: ${sanitizeLine(sceneContext.environmentHint, 80)}` : "Environment: cozy, softly lit background.",
+    style,
+    "Aspect: 1:1 square, 1024x1024.",
+    "Composition rules:",
+    "- Make the primary subject large and central.",
+    "- Include the human only if provided; place human at bottom-left, scaled to exactly 1/6 of the subject height; human is silent and has NO speech bubble.",
+    "- Draw a clean speech bubble for the subject only if text is provided.",
+    "Typography: bubble uses clean rounded font, high legibility.",
     "RULES:",
     "- Only the PET/PLANT may speak.",
-    "- Human must be silent, fixed at bottom-left, scaled to 1/6 of subject height.",
-    "- Never draw a speech bubble for the human.",
+    "- Human must be silent.",
     forbidCats
       ? "- Do NOT add cats/felines unless species is explicitly 'cat'."
       : "- Cat elements allowed only if species is 'cat'.",
-  ];
+  ].filter(Boolean);
 
-  const bubble =
-    sceneContext.showBubbles && dialogue.subject
-      ? `Speech bubble (subject only): “${sanitize(dialogue.subject)}”`
-      : "No speech bubble if subject dialogue is empty.";
-
-  const refs = [];
-  // 只在不是 dataURL 的情況下才加入參考 URL（短）
-  if (subjectImageUrl) refs.push(`Subject reference: ${subjectImageUrl}`);
-  if (humanImageUrl) refs.push(`Human reference: ${humanImageUrl}`);
-
-  let text = [
-    `Subject: ${subjectType} (${species})`,
-    ...refs,
-    bubble,
-    ...compositionRules,
-    ...hardRules,
-  ].join("\n");
-
-  // 終極保險（通常用不到）
-  if (text.length > 32000) text = text.slice(0, 31900);
-  return text;
-}
-
-function sanitize(s) {
-  return String(s || "").replace(/\n/g, " ").slice(0, 140);
+  return lines.join("\n");
 }
