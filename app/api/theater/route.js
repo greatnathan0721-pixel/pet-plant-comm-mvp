@@ -1,30 +1,22 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import OpenAI from "openai";
 
+// 若你是 Edge 環境想跑 Node 模組，確保 runtime 為 node
+export const runtime = "nodejs";
+
 const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
+  apiKey: process.env.OPENAI_API_KEY, // 這裡不要加 "!"
 });
 
-/**
- * 輸入結構
- * - 只有 subject（寵物/植物）能說話
- * - 人類必須清空台詞、固定左下角、比例 1/6
- */
+// 請求資料驗證
 const SceneSchema = z.object({
   subjectType: z.enum(["pet", "plant"]),
   species: z.string().min(1),
   subjectImageUrl: z.string().optional(),
   humanImageUrl: z.string().optional(),
   stylePreset: z
-    .enum([
-      "cute-cartoon",
-      "storybook",
-      "studio-portrait",
-      "painted",
-      "comic",
-      "photo",
-    ])
+    .enum(["cute-cartoon", "storybook", "studio-portrait", "painted", "comic", "photo"])
     .default("cute-cartoon"),
   dialogue: z.object({
     subject: z.string().default(""),
@@ -32,9 +24,7 @@ const SceneSchema = z.object({
   }),
   sceneContext: z
     .object({
-      mood: z
-        .enum(["warm", "adventure", "serene", "playful", "mystery"])
-        .default("warm"),
+      mood: z.enum(["warm", "adventure", "serene", "playful", "mystery"]).default("warm"),
       environmentHint: z.string().default(""),
       showBubbles: z.boolean().default(true),
     })
@@ -42,25 +32,21 @@ const SceneSchema = z.object({
   composition: z
     .object({
       humanScale: z.number().optional(),
-      humanPosition: z
-        .enum(["bottom-left", "bottom-right", "top-left", "top-right"])
-        .optional(),
+      humanPosition: z.enum(["bottom-left", "bottom-right", "top-left", "top-right"]).optional(),
       enforceRules: z.boolean().default(true),
     })
     .default({ enforceRules: true }),
 });
 
-type ScenePayload = z.infer<typeof SceneSchema>;
-
-export async function POST(req: NextRequest) {
+export async function POST(req) {
   try {
     const body = await req.json();
     const parsed = SceneSchema.parse(body);
 
-    // 強制規範
-    const safePayload: ScenePayload = {
+    // 後端強制規範
+    const safePayload = {
       ...parsed,
-      dialogue: { subject: parsed.dialogue.subject ?? "", human: "" },
+      dialogue: { subject: parsed.dialogue.subject || "", human: "" },
       composition: {
         ...parsed.composition,
         humanScale: 1 / 6,
@@ -76,24 +62,21 @@ export async function POST(req: NextRequest) {
 
     const prompt = buildPrompt({ ...safePayload, forbidCats });
 
-    // 🔑 呼叫 OpenAI Images API
+    // 呼叫 OpenAI Images，直接拿 b64 回傳 dataURL（前端可直接顯示）
     const result = await client.images.generate({
       model: "gpt-image-1",
       prompt,
       size: "1024x1024",
+      response_format: "b64_json",
     });
 
-    const imageUrl = result.data[0].url;
+    const b64 = result.data?.[0]?.b64_json;
+    if (!b64) throw new Error("OpenAI 回傳空的影像資料");
 
-    return NextResponse.json(
-      {
-        ok: true,
-        imageUrl,
-        prompt, // 方便 debug 規範有沒有帶進去
-      },
-      { status: 200 }
-    );
-  } catch (err: any) {
+    const imageUrl = `data:image/png;base64,${b64}`;
+
+    return NextResponse.json({ ok: true, imageUrl, prompt }, { status: 200 });
+  } catch (err) {
     console.error("THEATER_ROUTE_ERROR:", err);
     return NextResponse.json(
       { ok: false, error: err?.message || "Unknown error" },
@@ -102,7 +85,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-function buildPrompt(input: ScenePayload & { forbidCats: boolean }) {
+function buildPrompt(input) {
   const {
     subjectType,
     species,
@@ -150,7 +133,7 @@ function buildPrompt(input: ScenePayload & { forbidCats: boolean }) {
       ? `Speech bubble (subject): “${sanitize(dialogue.subject)}”`
       : "No speech bubble if subject line empty.";
 
-  const refs: string[] = [];
+  const refs = [];
   if (subjectImageUrl) refs.push(`Subject reference: ${subjectImageUrl}`);
   if (humanImageUrl) refs.push(`Human reference: ${humanImageUrl}`);
 
@@ -163,6 +146,6 @@ function buildPrompt(input: ScenePayload & { forbidCats: boolean }) {
   ].join("\n");
 }
 
-function sanitize(s: string) {
-  return s.replace(/\n/g, " ").slice(0, 140);
+function sanitize(s) {
+  return String(s || "").replace(/\n/g, " ").slice(0, 140);
 }
