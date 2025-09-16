@@ -1,12 +1,10 @@
 // app/api/plant/identify/route.js
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
 
 export const runtime = "nodejs";
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const S = (v, fb="") => (typeof v === "string" ? v : fb);
-const N = (v, fb=0.6) => (typeof v === "number" ? v : fb);
+const S = (v, fb = "") => (typeof v === "string" ? v : fb);
+const N = (v, fb = 0.6) => (typeof v === "number" ? v : fb);
 
 export async function POST(req) {
   try {
@@ -15,11 +13,14 @@ export async function POST(req) {
     const userText = S(body?.userText, "");
     const lang = S(body?.lang, "zh");
 
+    if (!process.env.OPENAI_API_KEY) {
+      return NextResponse.json({ error: "Missing OPENAI_API_KEY" }, { status: 500 });
+    }
     if (!imageData) {
       return NextResponse.json({ error: "缺少圖片 imageData" }, { status: 400 });
     }
 
-    const sys = [
+    const system = [
       "You are a helpful houseplant assistant.",
       "Identify the plant species from the photo, assess basic health, list likely issues and care steps.",
       "Return JSON with fields:",
@@ -33,11 +34,11 @@ export async function POST(req) {
       userText ? `使用者補充：${userText}` : ""
     ].filter(Boolean).join("\n");
 
-    const completion = await client.chat.completions.create({
+    const payload = {
       model: "gpt-4o-mini",
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: sys },
+        { role: "system", content: system },
         {
           role: "user",
           content: [
@@ -46,10 +47,25 @@ export async function POST(req) {
           ]
         }
       ],
-      temperature: 0.5,
+      temperature: 0.5
+    };
+
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
     });
 
-    const raw = completion.choices?.[0]?.message?.content || "{}";
+    if (!r.ok) {
+      const errText = await r.text().catch(() => "");
+      return NextResponse.json({ error: "OpenAI error", details: errText }, { status: 502 });
+    }
+
+    const j = await r.json();
+    const raw = j?.choices?.[0]?.message?.content || "{}";
     let data;
     try { data = JSON.parse(raw); } catch { data = {}; }
 
@@ -59,7 +75,7 @@ export async function POST(req) {
       confidence: Math.max(0, Math.min(1, N(data.confidence, 0.6))),
       state: S(data.state, "整體看起來穩定，建議維持穩定日照與通風。"),
       likely_issues: Array.isArray(data.likely_issues) ? data.likely_issues : [],
-      care_steps: Array.isArray(data.care_steps) ? data.care_steps : ["保持土壤微濕，避免積水。","給予明亮散射光。"],
+      care_steps: Array.isArray(data.care_steps) ? data.care_steps : ["保持土壤微濕，避免積水。", "給予明亮散射光。"],
       fun_one_liner: S(data.fun_one_liner, "我很綠，但不綠茶。"),
     };
 
