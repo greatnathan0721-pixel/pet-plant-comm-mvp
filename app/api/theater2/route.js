@@ -49,23 +49,34 @@ const pickQuip = (sp, fb="我先可愛，你隨意。") => {
 };
 
 // —— prompt：寫實 85%，人像動態位置（依背景/姿勢/心情） ——
-function buildPrompt({ species, mood, bubbleText, envHint }) {
+function buildPrompt({ species, mood, bubbleText, envHint, hasHuman }) {
   const style = "ultra realistic photo, cinematic soft light, shallow depth of field, natural textures (fur/skin/leaf).";
-  return keep([
+  const rules = [
+    "Result must look like a REAL photo (not cartoon/painting).",
+    // —— 嚴格保留上傳影像內容 ——
+    "When a base photo is provided: PRESERVE the original background, furniture, perspective and composition. Do not replace the scene.",
+    "Do not move or reshape the pet/plant; keep markings and colors ~85% similar to the uploaded subject.",
+    // —— 人像規則：沒有就別加 ——
+    hasHuman
+      ? "A human image is provided: include EXACTLY one human, at a NATURAL position relative to the subject and background, about one-sixth to one-fifth of the subject size. Human is silent."
+      : "No human image is provided: DO NOT add any human figure.",
+    // —— 互動與氣泡 ——
+    "Only the pet/plant may speak. Human (if present) must be silent.",
+    bubbleText ? "Add one rounded speech bubble with the given Traditional Chinese text; keep typography legible." : "No speech bubble if none.",
+    // 其它限制
+    "Do not add extra animals or props. Keep environment coherent.",
+    "Aspect: 1:1 square, 1024x1024."
+  ].join("\n");
+
+  return [
     `Style: ${style}`,
     `Mood: ${mood || "warm"}.`,
-    envHint ? `Environment hint: ${keep(envHint, 80)}` : "Environment: coherent home/urban setting with natural light.",
-    bubbleText ? `Speech bubble (Traditional Chinese, Taiwan slang, witty): “${bubbleText}”` : "No speech bubble if none.",
-    "Rules:",
-    "- Output must look like a real photo (not cartoon/painting). Target ~85% similarity to the uploaded subject (colors/markings/leaves).",
-    "- Primary subject (pet/plant) large and central.",
-    "- If a human image is provided, include ONE human at a NATURAL position relative to the subject and background; size about one-sixth to one-fifth of subject; human is silent (no bubble).",
-    "- Human pose and expression should respond to the subject’s mood (greeting, comforting, playful); avoid copy-paste look.",
-    "- Only the pet/plant may speak. Human must be silent.",
-    "- Keep background coherent; do not add extra animals or wrong species.",
-    "Aspect: 1:1 square, 1024x1024."
-  ].join("\n"), 31900);
+    envHint ? `Environment hint: ${keepLen(envHint, 80)}` : "Environment: same as the uploaded photo.",
+    bubbleText ? `Speech bubble (Traditional Chinese): “${bubbleText}”` : "",
+    rules
+  ].join("\n");
 }
+
 
 export async function POST(req) {
   const reqId = Math.random().toString(36).slice(2,8);
