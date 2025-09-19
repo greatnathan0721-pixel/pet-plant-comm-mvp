@@ -24,15 +24,16 @@ export async function POST(req) {
 
 const system = [
   "You are a detailed, safety-first pet expert for cats and dogs.",
-  "Always give rich observations even when the pet looks normal.",
+  "Look for subtle signals the owner might miss: posture asymmetry, tail set, ear angle, blink rate, pupil size, coat sheen, grooming pattern, respiration, tension in shoulders/hips, avoidance/approach, environment hazards.",
   "Output JSON with fields:",
-  "state (string: at least 2–3 full sentences describing posture/eyes/coat/energy/stress hints and environment risks).",
-  "issues (string[]: 2–4 items, concrete potential concerns to watch).",
-  "suggestions (string[]: 4–6 items, practical step-by-step actions owner can take).",
+  "state (string: 3–5 sentences, include 1–2 subtle observations and what they imply).",
+  "issues (string[]: 2–4 concrete potential concerns to WATCH, not diagnoses; avoid repeating state text).",
+  "suggestions (string[]: 4–6 specific, step-by-step actions; avoid repeating issues; each step ≤ 22 chars in zh-TW).",
   "fun_one_liner (string: short witty line in Traditional Chinese, Taiwan wording).",
   "Answer in Traditional Chinese (Taiwan), avoid PRC-specific wording.",
-  "Be non-medical, but specific and actionable. No diagnosis."
+  "Be non-medical but specific and actionable."
 ].join(" ");
+
 
     const userPrompt = [
       `物種：${species === "cat" ? "貓" : "狗"}`,
@@ -79,26 +80,28 @@ const system = [
       return send({ error: "OpenAI bad JSON", details: text?.slice(0, 1200) }, 502, reqId);
     }
 
-    const raw = j?.choices?.[0]?.message?.content || "{}";
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      data = {};
-    }
+  // 解析後
+const raw = j?.choices?.[0]?.message?.content || "{}";
+let data; try { data = JSON.parse(raw); } catch { data = {}; }
 
-    const out = {
-      state: S(data.state, "目前看起來精神穩定，建議持續觀察作息與食慾。"),
-      issues: Array.isArray(data.issues) ? data.issues : [],
-      suggestions: Array.isArray(data.suggestions)
-        ? data.suggestions
-        : ["維持規律飲食與飲水。", "觀察排便與活動量。"],
-      fun_one_liner:
-        S(
-          data.fun_one_liner,
-          species === "cat" ? "別吵，我在耍廢。" : "散步快點啦，我腳抖了！"
-        )
-    };
+// 小工具：去重 + 過濾空白
+const uniq = (arr=[]) => Array.from(new Set(arr.map(s => String(s||"").trim()))).filter(Boolean);
+
+// 整理欄位
+let issues = Array.isArray(data.issues) ? uniq(data.issues).slice(0,4) : [];
+let suggestions = Array.isArray(data.suggestions) ? uniq(data.suggestions) : [];
+
+// 建議不要和問題句子一模一樣
+const issueSet = new Set(issues);
+suggestions = suggestions.filter(s => !issueSet.has(s)).slice(0,6);
+
+// 輸出
+const out = {
+  state: S(data.state, "觀察到整體精神穩定，肢體放鬆，無明顯壓力訊號。"),
+  issues,
+  suggestions,
+  fun_one_liner: S(data.fun_one_liner, species === "cat" ? "別吵，我在耍廢。" : "散步快點啦，我腳抖了！"),
+};
 
     return send(out, 200, reqId);
   } catch (err) {
