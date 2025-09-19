@@ -124,7 +124,9 @@ export default function HomeClient2() {
         })
       });
       const tJson = await tRes.json();
-      if (!tJson.ok) throw new Error(tJson.error || '劇場生成失敗');
+if (!tJson.ok) {
+  throw new Error(`${tJson.error}${tJson.details ? `｜${tJson.details}` : ''}`);
+}
       setTheaterUrl(tJson.imageUrl);
 
     } catch (e) {
