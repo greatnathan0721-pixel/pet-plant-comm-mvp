@@ -2,7 +2,7 @@
 import { useState, useRef } from 'react';
 import AudioConsult from './AudioConsult';
 
-// 壓縮成 dataURL（省費用）
+// 壓縮成 dataURL（省費用，避免超大 dataURL 導致 400）
 async function compressImageToDataURL(file, maxSize = 720, quality = 0.7) {
   const img = document.createElement('img');
   const reader = new FileReader();
@@ -94,39 +94,35 @@ export default function HomeClient2() {
           body: JSON.stringify({ imageData: dataURL, userText, lang: 'zh' })
         });
         const raw = await res.json();
-        if (raw.error) throw new Error(raw.error + (raw.details ? `｜${raw.details}` : ''));
+        if (!res.ok || raw.error) throw new Error((raw && (raw.error || raw.details)) || '植物辨識失敗');
         const result = raw.result || raw;
         setPlantResult(result);
       } else {
-        console.log('➡️ 呼叫 analyze2');
         const res = await fetch('/api/analyze2', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ species, userText, imageData: dataURL, lang: 'zh' })
         });
         const data = await res.json();
-        if (data.error) throw new Error(data.error + (data.details ? `｜${data.details}` : ''));
+        if (!res.ok || data.error) throw new Error((data && (data.error || data.details)) || '寵物分析失敗');
         setPetResult(data);
       }
 
-      // 串接 theater API
+      // 串接 theater 寫實生圖（後端自動選詞，禁止亂加人、保留背景）
       const tRes = await fetch('/api/theater2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subjectType: species === 'plant' ? 'plant' : 'pet',
           species,
-          stylePreset: 'photo', // 或直接移除此欄位，後端已強制寫實
-          dialogue: { subject: '' }, // 讓後端自動套詞庫
+          dialogue: { subject: '' }, // 讓後端自動套台詞
           sceneContext: { showBubbles: true },
           subjectImageData: dataURL,
           humanImageData: humanPreview || undefined,
         })
       });
       const tJson = await tRes.json();
-if (!tJson.ok) {
-  throw new Error(`${tJson.error}${tJson.details ? `｜${tJson.details}` : ''}`);
-}
+      if (!tRes.ok || !tJson.ok) throw new Error(`${tJson.error || '劇場生成失敗'}${tJson.details ? `｜${tJson.details}` : ''}`);
       setTheaterUrl(tJson.imageUrl);
 
     } catch (e) {
@@ -207,83 +203,61 @@ if (!tJson.ok) {
               </button>
             </div>
 
-            {/* 結果顯示 */}
+            {/* 結果顯示：寵物 */}
             {petResult && (
               <div style={{ marginTop: 16 }}>
                 <strong>🐾 目前狀態</strong>
                 <p style={{ whiteSpace: 'pre-line' }}>{petResult.state}</p>
+
+                {Array.isArray(petResult.issues) && petResult.issues.length > 0 && (
+                  <>
+                    <strong>可能問題</strong>
+                    <ul>{petResult.issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                  </>
+                )}
+
+                {Array.isArray(petResult.suggestions) && petResult.suggestions.length > 0 && (
+                  <>
+                    <strong>建議步驟</strong>
+                    <ol>{petResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ol>
+                  </>
+                )}
               </div>
             )}
-            {petResult && Array.isArray(petResult.issues) && petResult.issues.length > 0 && (
-  <>
-    <strong>可能問題</strong>
-    <ul>{petResult.issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
-  </>
-)}
 
-{petResult && Array.isArray(petResult.suggestions) && petResult.suggestions.length > 0 && (
-  <>
-    <strong>建議步驟</strong>
-    <ol>{petResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ol>
-  </>
-)}
-{/* 結果顯示：寵物 */}
-{petResult && (
-  <div style={{ marginTop: 16 }}>
-    <strong>🐾 目前狀態</strong>
-    <p style={{ whiteSpace: 'pre-line' }}>{petResult.state}</p>
+            {/* 結果顯示：植物 */}
+            {plantResult && !plantResult.error && (
+              <div style={{ marginTop: 16 }}>
+                <strong>🌿 植物辨識</strong>
+                <ul>
+                  <li>名稱：{plantResult.common_name || '未知'}（{plantResult.scientific_name || '-'}）</li>
+                  <li>信心：{typeof plantResult.confidence === 'number' ? (plantResult.confidence * 100).toFixed(0) + '%' : '-'}</li>
+                </ul>
 
-    {Array.isArray(petResult.issues) && petResult.issues.length > 0 && (
-      <>
-        <strong>可能問題</strong>
-        <ul>{petResult.issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
-      </>
-    )}
+                {plantResult.state && (
+                  <>
+                    <strong>目前狀態</strong>
+                    <p style={{ whiteSpace: 'pre-line' }}>{plantResult.state}</p>
+                  </>
+                )}
 
-    {Array.isArray(petResult.suggestions) && petResult.suggestions.length > 0 && (
-      <>
-        <strong>建議步驟</strong>
-        <ol>{petResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ol>
-      </>
-    )}
-  </div>
-)}
+                {Array.isArray(plantResult.likely_issues) && plantResult.likely_issues.length > 0 && (
+                  <>
+                    <strong>可能問題</strong>
+                    <ul>{plantResult.likely_issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                  </>
+                )}
 
-{/* 結果顯示：植物 */}
-{plantResult && !plantResult.error && (
-  <div style={{ marginTop: 16 }}>
-    <strong>🌿 植物辨識</strong>
-    <ul>
-      <li>名稱：{plantResult.common_name || '未知'}（{plantResult.scientific_name || '-'}）</li>
-      <li>信心：{typeof plantResult.confidence === 'number' ? (plantResult.confidence * 100).toFixed(0) + '%' : '-'}</li>
-    </ul>
+                {Array.isArray(plantResult.care_steps) && plantResult.care_steps.length > 0 && (
+                  <>
+                    <strong>照護步驟</strong>
+                    <ol>{plantResult.care_steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+                  </>
+                )}
+              </div>
+            )}
 
-    {plantResult.state && (
-      <>
-        <strong>目前狀態</strong>
-        <p style={{ whiteSpace: 'pre-line' }}>{plantResult.state}</p>
-      </>
-    )}
-
-    {Array.isArray(plantResult.likely_issues) && plantResult.likely_issues.length > 0 && (
-      <>
-        <strong>可能問題</strong>
-        <ul>{plantResult.likely_issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
-      </>
-    )}
-
-    {Array.isArray(plantResult.care_steps) && plantResult.care_steps.length > 0 && (
-      <>
-        <strong>照護步驟</strong>
-        <ol>{plantResult.care_steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
-      </>
-    )}
-  </div>
-)}
-
-
-
-            {/* 內心小劇場 */}
+            {/* 內心小劇場（寫實） */}
             {theaterUrl && (
               <div style={{ marginTop: 16 }}>
                 <strong>🎭 內心小劇場</strong>
