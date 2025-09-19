@@ -22,10 +22,17 @@ export async function POST(req) {
       return send({ error: "缺少圖片 imageData" }, 400, reqId);
     }
 
-    const system =
-      "You are a helpful pet expert. Analyze the pet in the photo and the user's note. " +
-      "Return JSON: state (string), issues (string[]), suggestions (string[]), fun_one_liner (string). " +
-      "Write Traditional Chinese, practical, non-medical, safety-first. Keep fun_one_liner short and witty.";
+const system = [
+  "You are a detailed, safety-first pet expert for cats and dogs.",
+  "Always give rich observations even when the pet looks normal.",
+  "Output JSON with fields:",
+  "state (string: at least 2–3 full sentences describing posture/eyes/coat/energy/stress hints and environment risks).",
+  "issues (string[]: 2–4 items, concrete potential concerns to watch).",
+  "suggestions (string[]: 4–6 items, practical step-by-step actions owner can take).",
+  "fun_one_liner (string: short witty line in Traditional Chinese, Taiwan wording).",
+  "Answer in Traditional Chinese (Taiwan), avoid PRC-specific wording.",
+  "Be non-medical, but specific and actionable. No diagnosis."
+].join(" ");
 
     const userPrompt = [
       `物種：${species === "cat" ? "貓" : "狗"}`,
