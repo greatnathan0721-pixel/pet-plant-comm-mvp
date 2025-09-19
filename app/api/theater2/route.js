@@ -86,43 +86,40 @@ export async function POST(req) {
     const bubble = showBubbles ? wrap(givenText || pickQuip(species), 12) : "";
     const prompt = buildPrompt({ species, mood, bubbleText: bubble, envHint });
 
-    // 有上傳主圖 → 走 image-to-image
-    if (subjectImageData) {
-      const form = new FormData();
-      form.append("model", "gpt-image-1");
-      form.append("prompt", prompt);
-      form.append("size", "1024x1024");
+    // 有上傳主圖 → 走 image-to-image（只送主圖）
+if (subjectImageData) {
+  const form = new FormData();
+  form.append("model", "gpt-image-1");
+  form.append("prompt", prompt);
+  form.append("size", "1024x1024");
 
-      const baseBlob = dataURLToPNGBlob(subjectImageData);
-      if (!baseBlob) {
-        return NextResponse.json({ ok:false, error:"主圖 dataURL 解析失敗" }, { status:400 });
-      }
-      form.append("image", baseBlob, "subject.png");
+  const baseBlob = dataURLToPNGBlob(subjectImageData);
+  if (!baseBlob) {
+    return NextResponse.json({ ok:false, error:"主圖 dataURL 解析失敗" }, { status:400 });
+  }
+  form.append("image", baseBlob, "subject.png");
 
-      // 可選：人像也附上作為參考（不產生人類氣泡）
-      if (humanImageData) {
-        const hBlob = dataURLToPNGBlob(humanImageData);
-        if (hBlob) form.append("image", hBlob, "human.png");
-      }
+  // ❌ 先不要再 append 第二張圖（humanImageData），避免 400
+  // if (humanImageData) { ... }  ← 整段刪掉
 
-      const r = await fetch("https://api.openai.com/v1/images/edits", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-        body: form,
-        cache: "no-store",
-      });
+  const r = await fetch("https://api.openai.com/v1/images/edits", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: form,
+    cache: "no-store",
+  });
 
-      const text = await r.text();
-      if (!r.ok) {
-        return NextResponse.json({ ok:false, error:"OpenAI edits error", details:text }, { status:400, headers:{ "x-req-id": reqId } });
-      }
-      let j; try { j = JSON.parse(text); } catch { j = null; }
-      const b64 = j?.data?.[0]?.b64_json;
-      if (!b64) {
-        return NextResponse.json({ ok:false, error:"OpenAI 回傳空影像" }, { status:400, headers:{ "x-req-id": reqId } });
-      }
-      return NextResponse.json({ ok:true, imageUrl:`data:image/png;base64,${b64}` }, { status:200, headers:{ "x-req-id": reqId, "x-theater-version":"v0.3-realistic" }});
-    }
+  const text = await r.text();
+  if (!r.ok) {
+    return NextResponse.json({ ok:false, error:"OpenAI edits error", details:text }, { status:400 });
+  }
+  let j; try { j = JSON.parse(text); } catch { j = null; }
+  const b64 = j?.data?.[0]?.b64_json;
+  if (!b64) return NextResponse.json({ ok:false, error:"OpenAI 回傳空影像" }, { status:400 });
+
+  return NextResponse.json({ ok:true, imageUrl:`data:image/png;base64,${b64}` }, { status:200 });
+}
+
 
     // 沒主圖 → 純文字生圖
     const payload = { model:"gpt-image-1", prompt, size:"1024x1024" };
