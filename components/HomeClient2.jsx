@@ -227,42 +227,60 @@ if (!tJson.ok) {
     <ol>{petResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ol>
   </>
 )}
+{/* 結果顯示：寵物 */}
+{petResult && (
+  <div style={{ marginTop: 16 }}>
+    <strong>🐾 目前狀態</strong>
+    <p style={{ whiteSpace: 'pre-line' }}>{petResult.state}</p>
 
-            {/* 寵物：可能問題 / 建議步驟 */}
-{petResult && Array.isArray(petResult.issues) && petResult.issues.length > 0 && (
-  <>
-    <strong>可能問題</strong>
-    <ul>{petResult.issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
-  </>
-)}
-{petResult && Array.isArray(petResult.suggestions) && petResult.suggestions.length > 0 && (
-  <>
-    <strong>建議步驟</strong>
-    <ol>{petResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ol>
-  </>
+    {Array.isArray(petResult.issues) && petResult.issues.length > 0 && (
+      <>
+        <strong>可能問題</strong>
+        <ul>{petResult.issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+      </>
+    )}
+
+    {Array.isArray(petResult.suggestions) && petResult.suggestions.length > 0 && (
+      <>
+        <strong>建議步驟</strong>
+        <ol>{petResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ol>
+      </>
+    )}
+  </div>
 )}
 
-            {plantResult && !plantResult.error && (
-              <div style={{ marginTop: 16 }}>
-                <strong>🌿 植物辨識</strong>
-                <ul>
-                  <li>名稱：{plantResult.common_name || '未知'}（{plantResult.scientific_name || '-' }）</li>
-                  <li>信心：{typeof plantResult.confidence === 'number' ? (plantResult.confidence * 100).toFixed(0) + '%' : '-'}</li>
-                </ul>
-              </div>
-            )}
-            {plantResult && Array.isArray(plantResult.likely_issues) && plantResult.likely_issues.length > 0 && (
-  <>
-    <strong>可能問題</strong>
-    <ul>{plantResult.likely_issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
-  </>
+{/* 結果顯示：植物 */}
+{plantResult && !plantResult.error && (
+  <div style={{ marginTop: 16 }}>
+    <strong>🌿 植物辨識</strong>
+    <ul>
+      <li>名稱：{plantResult.common_name || '未知'}（{plantResult.scientific_name || '-'}）</li>
+      <li>信心：{typeof plantResult.confidence === 'number' ? (plantResult.confidence * 100).toFixed(0) + '%' : '-'}</li>
+    </ul>
+
+    {plantResult.state && (
+      <>
+        <strong>目前狀態</strong>
+        <p style={{ whiteSpace: 'pre-line' }}>{plantResult.state}</p>
+      </>
+    )}
+
+    {Array.isArray(plantResult.likely_issues) && plantResult.likely_issues.length > 0 && (
+      <>
+        <strong>可能問題</strong>
+        <ul>{plantResult.likely_issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+      </>
+    )}
+
+    {Array.isArray(plantResult.care_steps) && plantResult.care_steps.length > 0 && (
+      <>
+        <strong>照護步驟</strong>
+        <ol>{plantResult.care_steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+      </>
+    )}
+  </div>
 )}
-{plantResult && Array.isArray(plantResult.care_steps) && plantResult.care_steps.length > 0 && (
-  <>
-    <strong>照護步驟</strong>
-    <ol>{plantResult.care_steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
-  </>
-)}
+
 
 
             {/* 內心小劇場 */}
