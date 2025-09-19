@@ -110,13 +110,13 @@ export default function HomeClient2() {
       }
 
       // 串接 theater API
-      const tRes = await fetch('/api/theater', {
+      const tRes = await fetch('/api/theater2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subjectType: species === 'plant' ? 'plant' : 'pet',
           species,
-          stylePreset: 'cute-cartoon',
+          stylePreset: 'photo', // 或直接移除此欄位，後端已強制寫實
           dialogue: { subject: '' }, // 讓後端自動套詞庫
           sceneContext: { showBubbles: true },
           subjectImageData: dataURL,
@@ -212,6 +212,20 @@ export default function HomeClient2() {
                 <p style={{ whiteSpace: 'pre-line' }}>{petResult.state}</p>
               </div>
             )}
+            {petResult && Array.isArray(petResult.issues) && petResult.issues.length > 0 && (
+  <>
+    <strong>可能問題</strong>
+    <ul>{petResult.issues.map((s, i) => <li key={i}>{s}</li>)}</ul>
+  </>
+)}
+
+{petResult && Array.isArray(petResult.suggestions) && petResult.suggestions.length > 0 && (
+  <>
+    <strong>建議步驟</strong>
+    <ol>{petResult.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ol>
+  </>
+)}
+
             {/* 寵物：可能問題 / 建議步驟 */}
 {petResult && Array.isArray(petResult.issues) && petResult.issues.length > 0 && (
   <>
