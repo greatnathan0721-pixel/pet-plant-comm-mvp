@@ -61,21 +61,22 @@ STRICT DO / DON'T:
       userText ? `使用者補充：${userText}` : ""
     ].filter(Boolean).join("\n");
 
-    const payload = {
-      model: "gpt-4o-mini",
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: system },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: userPrompt || "請分析照片中的寵物狀態。" },
-            { type: "image_url", image_url: { url: imageData } }
-          ]
-        }
-      ],
-      temperature: 0.5
-    };
+const payload = {
+  model: "gpt-4o-mini",
+  response_format: { type: "json_object" },
+  temperature: 0.2,            // ← 由原本 0.5 改為 0.2，減少亂講與漂移
+  messages: [
+    { role: "system", content: system },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: userPrompt || "請分析照片中的寵物狀態。" },
+        { type: "image_url", image_url: { url: imageData } } // 保持不變
+      ]
+    }
+  ]
+};
+
 
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
