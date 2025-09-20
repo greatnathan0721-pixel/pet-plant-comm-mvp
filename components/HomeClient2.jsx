@@ -42,6 +42,9 @@ export default function HomeClient2() {
   const [theaterError, setTheaterError] = useState('');
   const [audioAdvice, setAudioAdvice] = useState('');
 
+  // ✅ 新增：是否讓 AI 自動微調人物姿勢（與寵物/植物互動更自然）
+  const [poseAdjust, setPoseAdjust] = useState(false);
+
   // 文字諮詢（保留）
   async function handleTextSubmit(e) {
     e.preventDefault();
@@ -108,7 +111,7 @@ export default function HomeClient2() {
         setPetResult(data);
       }
 
-      // 串接 theater 寫實生圖（後端自動選詞，禁止亂加人、保留背景）
+      // 串接 theater 寫實生圖（後端自動選詞；禁止亂加人；保原背景）
       const tRes = await fetch('/api/theater2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -116,9 +119,14 @@ export default function HomeClient2() {
           subjectType: species === 'plant' ? 'plant' : 'pet',
           species,
           dialogue: { subject: '' }, // 讓後端自動套台詞
-          sceneContext: { showBubbles: true },
+          sceneContext: {
+            showBubbles: true,
+            poseAdjust,              // ✅ 把 checkbox 的值帶給後端
+            mood: 'warm',
+            environmentHint: ''
+          },
           subjectImageData: dataURL,
-          humanImageData: humanPreview || undefined,
+          humanImageData: humanPreview || undefined, // 有上傳才帶，不然後端會嚴禁新增人
         })
       });
       const tJson = await tRes.json();
@@ -172,7 +180,7 @@ export default function HomeClient2() {
 
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20 }}>
           <div style={{ flex: '1 1 0%' }}>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <button type='button' onClick={() => fileRef.current?.click()} style={{ padding: '10px 16px' }}>
                 選擇諮詢照片
               </button>
@@ -182,6 +190,12 @@ export default function HomeClient2() {
                 選擇本人照片（可選）
               </button>
               <input ref={humanRef} type='file' accept='image/*' onChange={onHumanChange} style={{ display: 'none' }} />
+
+              {/* ✅ 新增：自動微調人物姿勢 */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#333' }}>
+                <input type="checkbox" checked={poseAdjust} onChange={(e) => setPoseAdjust(e.target.checked)} />
+                讓 AI 自動微調人物姿勢（互動更自然）
+              </label>
             </div>
 
             {preview && (
