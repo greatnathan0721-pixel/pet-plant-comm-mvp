@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 const S = (v, fb = "") => (typeof v === "string" ? v : fb);
 const B = (v, fb = true) => (typeof v === "boolean" ? v : fb);
 
+// -- helpers -----------------------------------------------------------------
 function dataURLToPNGBlob(dataURL) {
   const b64 = S(dataURL).split(",")[1];
   if (!b64) return null;
@@ -50,22 +51,34 @@ const wrap = (t, n = 12) => {
   return out.join("\n");
 };
 
-// ✅ Prompt：保留原背景；未上傳人像就禁止新增；寫實 85%
-function buildPrompt({ species, mood, bubbleText, envHint, hasHuman }) {
+// -- prompt builder -----------------------------------------------------------
+/**
+ * Prompt：B 方案（小人化互動）
+ * - 保留原背景與主體 (~85% 相似)
+ * - 未上傳人像：嚴禁新增人
+ * - 只有寵物/植物說話
+ * - poseAdjust = true 時，允許微調人物姿勢讓互動更自然
+ */
+function buildPrompt({ species, mood, bubbleText, envHint, hasHuman, poseAdjust }) {
   const style =
     "ultra realistic photo, cinematic soft light, shallow depth of field, natural textures (fur/skin/leaf)";
+
+  const humanRule = hasHuman
+    ? (poseAdjust
+        ? "A human image is provided: preserve the face identity, but ALLOW subtle NATURAL pose adjustment to interact with the pet/plant (e.g., gently crouching, extending hand to pet cat, watering plant). Keep movements realistic, no exaggerated actions."
+        : "A human image is provided: include EXACTLY one human AS-IS, scaled naturally (about one-sixth to one-fifth of the pet/plant size), placed at a plausible position relative to the subject and background. No pose changes.")
+    : "No human image is provided: DO NOT add any human figure.";
+
   const rules = [
     "Result must look like a REAL photo (not cartoon/painting).",
     "When a base photo is provided: PRESERVE the original background, furniture, perspective and composition. Do not replace or relocate the scene.",
     "Keep the pet/plant identity and markings consistent with the uploaded image (~85% similarity).",
-    hasHuman
-      ? "A human image is provided: include EXACTLY one human, at a NATURAL position relative to the subject and background, about one-sixth to one-fifth of the subject size. The human is silent."
-      : "No human image is provided: DO NOT add any human figure.",
+    humanRule,
     "Only the pet/plant may speak. The human (if present) must be silent.",
     bubbleText
       ? "Add ONE rounded speech bubble with the given Traditional Chinese text; typography must be clear and readable."
       : "No speech bubble if none.",
-    "Do not add extra animals or irrelevant props.",
+    "Do not add extra humans, animals, or irrelevant props.",
     "Aspect: 1:1 square, 1024x1024."
   ].join("\n");
 
@@ -78,8 +91,10 @@ function buildPrompt({ species, mood, bubbleText, envHint, hasHuman }) {
   ].join("\n");
 }
 
+// -- route -------------------------------------------------------------------
 export async function POST(req) {
   const reqId = Math.random().toString(36).slice(2, 8);
+
   try {
     if (!process.env.OPENAI_API_KEY) {
       return NextResponse.json({ ok: false, error: "Missing OPENAI_API_KEY" }, { status: 500 });
@@ -90,15 +105,16 @@ export async function POST(req) {
     const showBubbles = B(body?.sceneContext?.showBubbles, true);
     const mood = S(body?.sceneContext?.mood, "warm");
     const envHint = S(body?.sceneContext?.environmentHint, "");
+    const poseAdjust = B(body?.sceneContext?.poseAdjust, false); // ✅ 新增開關
     const givenText = S(body?.dialogue?.subject, "");
     const subjectImageData = S(body?.subjectImageData, "");
-    const humanImageData = S(body?.humanImageData, "");
+    const humanImageData = S(body?.humanImageData, ""); // 目前不上傳給模型，只作為是否允許出現人的條件
     const hasHuman = !!humanImageData;
 
     const bubble = showBubbles ? wrap(givenText || pickQuip(species), 12) : "";
-    const prompt = buildPrompt({ species, mood, bubbleText: bubble, envHint, hasHuman });
+    const prompt = buildPrompt({ species, mood, bubbleText: bubble, envHint, hasHuman, poseAdjust });
 
-    // ✅ 有主圖 → 走 image-to-image（只送主圖，避免 400）
+    // -- 有主圖：image-to-image（只送主圖；避免 400） ------------------------
     if (subjectImageData) {
       const form = new FormData();
       form.append("model", "gpt-image-1");
@@ -135,11 +151,11 @@ export async function POST(req) {
       }
       return NextResponse.json(
         { ok: true, imageUrl: `data:image/png;base64,${b64}` },
-        { status: 200, headers: { "x-req-id": reqId, "x-theater-version": "v0.4-realistic" } }
+        { status: 200, headers: { "x-req-id": reqId, "x-theater-version": "v0.5-realistic-pose" } }
       );
     }
 
-    // 沒主圖 → 純文字生圖（較少用；仍保寫實）
+    // -- 沒主圖：純文字生圖（較少用；仍保寫實） -----------------------------
     const payload = { model: "gpt-image-1", prompt, size: "1024x1024" };
     const r = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
@@ -150,6 +166,7 @@ export async function POST(req) {
       body: JSON.stringify(payload),
       cache: "no-store"
     });
+
     const text = await r.text();
     if (!r.ok) {
       return NextResponse.json(
@@ -168,7 +185,7 @@ export async function POST(req) {
 
     return NextResponse.json(
       { ok: true, imageUrl: url },
-      { status: 200, headers: { "x-req-id": reqId, "x-theater-version": "v0.4-realistic" } }
+      { status: 200, headers: { "x-req-id": reqId, "x-theater-version": "v0.5-realistic-pose" } }
     );
   } catch (err) {
     console.error("THEATER2_ERROR:", err);
